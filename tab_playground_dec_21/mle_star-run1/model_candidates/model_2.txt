@@ -1,0 +1,43 @@
+## Model name
+XGBoost Classifier
+
+## Example Python code
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+import xgboost as xgb
+from sklearn.metrics import accuracy_score
+
+# 1. Simulate Data (re-using the same simulation as LightGBM for consistency)
+np.random.seed(42)
+n_samples = 1000
+n_features_numerical = 5
+n_wilderness_areas = 3 # Will be one-hot encoded into 3 features
+n_soil_types = 4       # Will be one-hot encoded into 4 features
+n_classes = 7
+
+# Numerical features
+X_numerical = np.random.rand(n_samples, n_features_numerical) * 100
+
+# Categorical features (one-hot encoded manually for simplicity)
+X_wilderness = pd.get_dummies(np.random.randint(0, n_wilderness_areas, n_samples), prefix='wilderness')
+X_soil = pd.get_dummies(np.random.randint(0, n_soil_types, n_samples), prefix='soil')
+
+# Combine all features
+X = pd.concat([pd.DataFrame(X_numerical, columns=[f'num_feat_{i}' for i in range(n_features_numerical)]), X_wilderness, X_soil], axis=1)
+y = np.random.randint(0, n_classes, n_samples) # Target labels 0 to 6
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+# 2. Initialize and Train XGBoost Classifier
+# For multi-class classification, objective='multi:softmax' for class labels or 'multi:softprob' for probabilities.
+# num_class must be specified for multi-class objectives.
+model_xgb = xgb.XGBClassifier(objective='multi:softmax', num_class=n_classes, eval_metric='mlogloss', use_label_encoder=False, random_state=42)
+model_xgb.fit(X_train, y_train)
+
+# 3. Make Predictions
+y_pred_xgb = model_xgb.predict(X_test)
+
+# 4. Evaluate (Optional, for demonstration)
+accuracy_xgb = accuracy_score(y_test, y_pred_xgb)
+print(f"XGBoost Accuracy: {accuracy_xgb:.4f}")

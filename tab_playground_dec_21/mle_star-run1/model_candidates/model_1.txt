@@ -1,0 +1,44 @@
+## Model name
+LightGBM Classifier
+
+## Example Python code
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from lightgbm import LGBMClassifier
+from sklearn.metrics import accuracy_score
+
+# 1. Simulate Data
+np.random.seed(42)
+n_samples = 1000
+n_features_numerical = 5
+n_wilderness_areas = 3 # Will be one-hot encoded into 3 features
+n_soil_types = 4       # Will be one-hot encoded into 4 features
+n_classes = 7
+
+# Numerical features
+X_numerical = np.random.rand(n_samples, n_features_numerical) * 100
+
+# Categorical features (one-hot encoded manually for simplicity)
+X_wilderness = pd.get_dummies(np.random.randint(0, n_wilderness_areas, n_samples), prefix='wilderness')
+X_soil = pd.get_dummies(np.random.randint(0, n_soil_types, n_samples), prefix='soil')
+
+# Combine all features
+X = pd.concat([pd.DataFrame(X_numerical, columns=[f'num_feat_{i}' for i in range(n_features_numerical)]), X_wilderness, X_soil], axis=1)
+y = np.random.randint(0, n_classes, n_samples) # Target labels 0 to 6
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+# 2. Initialize and Train LightGBM Classifier
+# For multi-class classification, LightGBM automatically uses 'multiclass' objective
+# when y contains more than 2 unique classes and objective is not explicitly set to 'binary' or 'regression'.
+# You can also explicitly set objective='multiclass' and num_class=n_classes.
+model_lgbm = LGBMClassifier(objective='multiclass', num_class=n_classes, random_state=42)
+model_lgbm.fit(X_train, y_train)
+
+# 3. Make Predictions
+y_pred_lgbm = model_lgbm.predict(X_test)
+
+# 4. Evaluate (Optional, for demonstration)
+accuracy_lgbm = accuracy_score(y_test, y_pred_lgbm)
+print(f"LightGBM Accuracy: {accuracy_lgbm:.4f}")
