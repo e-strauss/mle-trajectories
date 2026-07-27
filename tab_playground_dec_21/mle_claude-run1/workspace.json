@@ -1,0 +1,9 @@
+{
+  "id": "tab_play_dec_21_20260723_110448_4307",
+  "created_at": "2026-07-23T09:04:48.363499+00:00",
+  "input_source": "/Users/elias/repos/mle-claude/tasks/tab_play_dec_21/input",
+  "venv": "/Users/elias/repos/mle-claude/.venv",
+  "cwd_at_creation": "/Users/elias/repos/mle-claude",
+  "scoring": "accuracy",
+  "cv": "KFold(n_splits=3, random_state=42, shuffle=True)"
+}

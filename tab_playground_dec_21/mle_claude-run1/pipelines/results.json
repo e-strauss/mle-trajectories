@@ -1,0 +1,330 @@
+[
+  {
+    "pipeline": "pipeline_24",
+    "parent": "pipeline_23",
+    "description": "TUNE MLP: hidden{256,512} x n_layers{2,3}, 35 epochs, champion features",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.96184,
+    "duration_s": 3665.1,
+    "extra": {
+      "grid": [
+        {
+          "hidden": 512,
+          "n_layers": 3,
+          "mean_test_score": 0.9618440000006202
+        },
+        {
+          "hidden": 256,
+          "n_layers": 3,
+          "mean_test_score": 0.9616155000248702
+        },
+        {
+          "hidden": 512,
+          "n_layers": 2,
+          "mean_test_score": 0.9615579999958701
+        },
+        {
+          "hidden": 256,
+          "n_layers": 2,
+          "mean_test_score": 0.9613234999882452
+        }
+      ]
+    }
+  },
+  {
+    "pipeline": "pipeline_23",
+    "parent": "pipeline_21",
+    "description": "MODEL: torch MLP (skorch, 2x256, 15ep, mps) on champion features",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.96041,
+    "duration_s": 361.9,
+    "extra": {}
+  },
+  {
+    "pipeline": "pipeline_16",
+    "parent": "pipeline_14",
+    "description": "FINAL: pipeline_14 feature set (base_geo + soil + ratios) at big_model (700/511/lr0.035)",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.95646,
+    "duration_s": 2670.3,
+    "extra": {}
+  },
+  {
+    "pipeline": "pipeline_08",
+    "parent": "pipeline_07",
+    "description": "LightGBM max capacity (700 trees, lr=0.035, 511 leaves) + richer features",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.95589,
+    "duration_s": 2594.7,
+    "extra": {}
+  },
+  {
+    "pipeline": "pipeline_21",
+    "parent": "pipeline_14",
+    "description": "FEATURE: soil ELU climatic/geologic zones on base14 (fast config, ablation)",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.95283,
+    "duration_s": 891.0,
+    "extra": {
+      "grid": [
+        {
+          "featureset": "+elu_both",
+          "mean_test_score": 0.9528302508493689
+        },
+        {
+          "featureset": "base14",
+          "mean_test_score": 0.9519207506853689
+        },
+        {
+          "featureset": "+elu_climatic",
+          "mean_test_score": 0.9509195006242437
+        }
+      ]
+    }
+  },
+  {
+    "pipeline": "pipeline_22",
+    "parent": "pipeline_21",
+    "description": "FEATURE: target encoding (dominant soil/wilderness) on champion (fast, ablation)",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.95283,
+    "duration_s": 708.3,
+    "extra": {
+      "grid": [
+        {
+          "featureset": "champ",
+          "mean_test_score": 0.9528302508493689
+        },
+        {
+          "featureset": "champ+TE",
+          "mean_test_score": 0.9457982517486178
+        }
+      ]
+    }
+  },
+  {
+    "pipeline": "pipeline_20",
+    "parent": "pipeline_14",
+    "description": "CAPACITY: 400 trees/127 leaves, lr{0.05,0.075} on base14 features",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.95249,
+    "duration_s": 1107.8,
+    "extra": {
+      "grid": [
+        {
+          "lr": 0.05,
+          "mean_test_score": 0.9524870007628063
+        },
+        {
+          "lr": 0.075,
+          "mean_test_score": 0.9503110003127437
+        }
+      ]
+    }
+  },
+  {
+    "pipeline": "pipeline_14",
+    "parent": "pipeline_12",
+    "description": "MERGE: base_geo + soil descriptors (12) + distance ratios (11)",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.95192,
+    "duration_s": 276.1,
+    "extra": {}
+  },
+  {
+    "pipeline": "pipeline_17",
+    "parent": "pipeline_14",
+    "description": "TUNE fast: num_leaves{127,255} x min_child_samples{20,100} on pipeline_14 features",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.95192,
+    "duration_s": 1361.8,
+    "extra": {
+      "grid": [
+        {
+          "min_child_samples": 20,
+          "num_leaves": 127,
+          "mean_test_score": 0.9519207506853689
+        },
+        {
+          "min_child_samples": 100,
+          "num_leaves": 127,
+          "mean_test_score": 0.947609749648306
+        },
+        {
+          "min_child_samples": 100,
+          "num_leaves": 255,
+          "mean_test_score": 0.9474542503965558
+        },
+        {
+          "min_child_samples": 20,
+          "num_leaves": 255,
+          "mean_test_score": 0.9436460013483675
+        }
+      ]
+    }
+  },
+  {
+    "pipeline": "pipeline_18",
+    "parent": "pipeline_14",
+    "description": "ABLATION: soil_extra on/off x ratios on/off (fast config, pipeline_14 base)",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.95192,
+    "duration_s": 884.1,
+    "extra": {
+      "grid": [
+        {
+          "featureset": "base14",
+          "mean_test_score": 0.9519207506853689
+        },
+        {
+          "featureset": "base14+soilx",
+          "mean_test_score": 0.9505820012864935
+        },
+        {
+          "featureset": "soilx_no_ratios",
+          "mean_test_score": 0.949564500838806
+        }
+      ]
+    }
+  },
+  {
+    "pipeline": "pipeline_07",
+    "parent": "pipeline_06",
+    "description": "LightGBM (pipeline_06 config) + richer features (soil/wild counts, hillshade spread, |VDH|)",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.95136,
+    "duration_s": 774.8,
+    "extra": {}
+  },
+  {
+    "pipeline": "pipeline_12",
+    "parent": "pipeline_09",
+    "description": "C: base_geo + soil-descriptor domain features (stoniness, cryic, rock)",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.95077,
+    "duration_s": 251.9,
+    "extra": {}
+  },
+  {
+    "pipeline": "pipeline_15",
+    "parent": "pipeline_14",
+    "description": "IMPROVE: pipeline_14 merge + soil x geo crosses (cryic/stoniness/rock x elev/slope)",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.95065,
+    "duration_s": 349.2,
+    "extra": {}
+  },
+  {
+    "pipeline": "pipeline_19",
+    "parent": "pipeline_14",
+    "description": "MEDIUM config (400 trees/lr0.05/255 leaves) on base14 features",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.94909,
+    "duration_s": 831.1,
+    "extra": {}
+  },
+  {
+    "pipeline": "pipeline_11",
+    "parent": "pipeline_09",
+    "description": "B: base_geo + distance ratios & aggregates",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.94907,
+    "duration_s": 248.5,
+    "extra": {}
+  },
+  {
+    "pipeline": "pipeline_09",
+    "parent": "pipeline_07",
+    "description": "ANCHOR: base_geo features, fast model (200 trees/127 leaves/lr0.1)",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.94791,
+    "duration_s": 228.3,
+    "extra": {}
+  },
+  {
+    "pipeline": "pipeline_06",
+    "parent": "pipeline_05",
+    "description": "LightGBM higher capacity (400 trees, lr=0.05, 255 leaves) + engineered features",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.94782,
+    "duration_s": 798.8,
+    "extra": {}
+  },
+  {
+    "pipeline": "pipeline_10",
+    "parent": "pipeline_09",
+    "description": "A: base_geo + multiplicative interactions (elev x slope/aspect, etc.)",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.94771,
+    "duration_s": 270.9,
+    "extra": {}
+  },
+  {
+    "pipeline": "pipeline_13",
+    "parent": "pipeline_09",
+    "description": "D: base_geo + hillshade dynamics & slope-adjusted illumination",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.94495,
+    "duration_s": 250.6,
+    "extra": {}
+  },
+  {
+    "pipeline": "pipeline_05",
+    "parent": "pipeline_03",
+    "description": "LightGBM + engineered geometric features (hydro/elev/distance/aspect)",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.93554,
+    "duration_s": 69.0,
+    "extra": {}
+  },
+  {
+    "pipeline": "pipeline_03",
+    "parent": "pipeline_02",
+    "description": "LightGBM classifier, default params, raw numeric features",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.92675,
+    "duration_s": 55.0,
+    "extra": {}
+  },
+  {
+    "pipeline": "pipeline_02",
+    "parent": "pipeline_01",
+    "description": "HistGradientBoostingClassifier, default params, raw numeric features",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.92262,
+    "duration_s": 251.8,
+    "extra": {}
+  },
+  {
+    "pipeline": "pipeline_01",
+    "parent": null,
+    "description": "Majority-class DummyClassifier (accuracy floor)",
+    "metric": "accuracy",
+    "cv": "KFold(n_splits=3, random_state=42, shuffle=True)",
+    "score": 0.56552,
+    "duration_s": 6.2,
+    "extra": {}
+  }
+]

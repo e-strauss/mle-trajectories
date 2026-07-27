@@ -1,0 +1,713 @@
+# Skrub DataOps — Guide for Building & Scoring ML Pipelines from Scratch
+
+This document gives you everything you need to take a raw tabular dataset (e.g. a
+`train.csv`) and produce a **valid skrub DataOps pipeline that can be scored by
+cross-validation**.
+
+> **Your goal as the agent using this guide:** given a training table, build an
+> end-to-end skrub DataOps plan and obtain a cross-validated score for it. You
+> will be asked to try many different candidate pipelines; each one only needs to
+> be **scored**. You do NOT predict on a test set, you do NOT write a submission,
+> and you do NOT need a fitted model artifact. The single deliverable is a score.
+
+The scoring is always done the same way:
+
+```python
+# the CV splitter is declared on mark_as_X (see section 3), NOT passed here
+search = pred.skb.make_grid_search(n_jobs=1, fitted=True, refit=False,
+                                   scoring="r2")   # any sklearn scorer string
+print(search.results_)        # a DataFrame; row 0 is the best score
+```
+- `fitted=True` runs the cross-validation immediately on the data captured in the
+  variables.
+- `refit=False` skips the (expensive, unneeded) final refit on all data — we only
+  want the CV score, not a model.
+- `search.results_` is a pandas DataFrame **sorted best-first**. Read the score
+  from column `mean_test_score`.
+- **No `cv=` is passed**: the splitter comes from `mark_as_X(cv=...)` in the plan
+  (section 3). A `cv=` passed here would *override* it, which is never what you
+  want in this project.
+
+> **In this project the `make_grid_search` call is executed by the ml-score
+> harness, not by your pipeline file.** A pipeline file only *defines* the plan
+> (module-level `pred`, `DESCRIPTION`, optional `PARENT`); the harness owns the
+> locked scorer and results.json. The **CV splitter is part of your plan**
+> (declared on `mark_as_X`, centrally via `common.py`); the harness passes no
+> `cv=` of its own so your plan's splitter drives, falling back to a default
+> `KFold` only if the plan declares none. Sections 9–10 still matter: they
+> explain what the harness runs and why choices must stay discrete.
+
+Target version: **skrub >= 0.9.0**.
+
+---
+
+## 1. The mental model
+
+A **DataOps plan** is a lazily-built computation graph. You write ordinary
+pandas / numpy / scikit-learn code, but each operation is *recorded* into a graph
+instead of being executed once. From that single graph skrub can cross-validate
+the entire end-to-end pipeline (loading, cleaning, feature engineering, encoding,
+model) without any train/test leakage — every fold re-runs all the recorded
+preprocessing on its own training rows.
+
+- `skrub.var("name", value)` introduces an **input node**; operations on it are
+  recorded. `skrub.as_data_op(value)` wraps a constant (e.g. a file path) as a
+  node — applying `pd.read_csv` to it records the file read itself in the plan.
+- `X.skb.mark_as_X()` / `y.skb.mark_as_y()` mark the **design matrix** and the
+  **target**. These are the points at which cross-validation splits the data.
+- `.skb.apply(estimator)` records a scikit-learn estimator/transformer step.
+- The **last DataOp** (the prediction node) is the handle you call
+  `.skb.make_grid_search(...)` on to get the score.
+
+The `.skb` namespace holds all skrub-specific methods. Anything *not* under `.skb`
+(e.g. `X.drop(...)`, `X["col"]`, `X.assign(...)`, `df.merge(...)`) is just the
+recorded version of the underlying pandas API.
+
+**Previews:** every DataOp carries a preview computed on the data you passed to
+`skrub.var`, so you can inspect intermediate results while building.
+
+---
+
+## 2. The canonical skeleton (build → score)
+
+```python
+import skrub
+import pandas as pd
+from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.model_selection import KFold
+
+# 1. Record the CSV read as the first step of the plan: wrap the *path* as a
+#    constant DataOp, then apply pd.read_csv to it.
+data = skrub.as_data_op("train.csv").skb.apply_func(pd.read_csv)
+
+# 2. (optional) subsample for fast previews while developing.
+#    IGNORED during scoring unless keep_subsampling=True, so it is safe.
+data = data.skb.subsample(n=1000)
+
+# 3. Separate target and features, and MARK them. Always mark the RAW target —
+#    never transform y before mark_as_y (see section 8). The CV splitter is set
+#    HERE on mark_as_X (section 3), the only place it can live.
+y = data["target"].skb.mark_as_y()
+X = data.drop(columns=["target", "Id"]).skb.mark_as_X(
+        cv=KFold(n_splits=5, shuffle=True, random_state=42))
+
+# 4. Preprocess / feature engineer using recorded operations (sections 4-6).
+
+# 5. Encode everything to a clean numeric matrix (section 5).
+X_vec = X.skb.apply(skrub.TableVectorizer())
+
+# 6. Apply the final model. y= makes it supervised.
+pred = X_vec.skb.apply(HistGradientBoostingRegressor(), y=y)
+
+# 7. Score the whole plan by cross-validation. THIS IS THE DELIVERABLE.
+#    No cv= here — the splitter from mark_as_X drives.
+search = pred.skb.make_grid_search(n_jobs=1, fitted=True, refit=False,
+                                   scoring="r2")
+print(search.results_)
+print("CV score:", search.results_["mean_test_score"].iloc[0])
+```
+
+### Why the order matters
+- **Mark `X` as early as possible**, right after separating it from the target.
+  Everything *downstream* of `mark_as_X()` becomes part of the pipeline and is
+  re-applied automatically to each CV fold. Do all real preprocessing *after* the
+  mark.
+- `mark_as_y()` is applied to the target only.
+
+---
+
+## 3. Variables and marking
+
+```python
+skrub.var("name", value)   # named input node, with a preview value
+skrub.X(value)             # shorthand: a var already marked as X
+skrub.y(value)             # shorthand: a var already marked as y
+skrub.as_data_op(value)    # wrap a constant value as a DataOp
+```
+
+**Reading files:** start the plan from the file *path* wrapped as a constant
+DataOp and record the read itself, instead of an eager `pd.read_csv` outside
+the plan:
+
+```python
+data = skrub.as_data_op("train.csv").skb.apply_func(pd.read_csv)
+```
+
+```python
+X = something.skb.mark_as_X()
+y = something.skb.mark_as_y()
+```
+### Cross-validation lives on `mark_as_X` — this is the only way to set it
+
+`mark_as_X` carries the cross-validation splitter for the whole plan:
+```python
+from sklearn.model_selection import GroupKFold
+X = data.drop(columns="target").skb.mark_as_X(cv=GroupKFold(5),
+                                              split_kwargs={"groups": data["user_id"]})
+```
+**In this project you always set the CV here, never by passing `cv=` to
+`make_grid_search`.** Two facts make this the only correct approach:
+
+1. **Priority is the reverse of what you might expect.** When a `cv=` is passed
+   to `make_grid_search`/`make_randomized_search`, skrub uses *that* and ignores
+   `mark_as_X(cv=...)`. The `mark_as_X` splitter is honoured *only when no `cv=`
+   is passed*. The ml-score harness therefore passes **no `cv=`** when your plan
+   declares one (so it drives), and falls back to a default `KFold` only when
+   your plan declares none.
+2. **`split_kwargs` has no other home.** Per-row split metadata — e.g. the
+   `groups` for `GroupKFold`, or a `date_id` array for a custom time splitter —
+   can be supplied **only** through `mark_as_X(split_kwargs=...)`. There is no
+   channel to deliver `groups` to a `cv=` passed at scoring time (skrub calls
+   `search.fit(X, y)` with no `groups`), so a `GroupKFold` passed that way raises
+   `ValueError: The 'groups' parameter should not be None`. Because
+   `split_kwargs` can reference a data column (`data["user_id"]`), the groups are
+   recomputed per fold from the recorded plan — no leakage.
+
+The CV is set **centrally in `common.py`** (`make_cv()` + `load_xy`, which calls
+`mark_as_X(cv=make_cv(), split_kwargs=...)`), so every pipeline in the workspace
+splits identically and scores stay comparable. Keep it fixed once the first
+pipeline is scored — the harness records the effective CV in `workspace.json`
+and warns loudly if a later pipeline's CV differs. For a grouped/time split,
+edit `make_cv()` once and pass `groups="col"` to `load_xy`.
+
+> Splitters that need **no** per-row metadata (`KFold`, `StratifiedKFold`,
+> `TimeSeriesSplit` on row order) are *static* — they could in principle be
+> passed at scoring time. We still set them on `mark_as_X` so there is one
+> uniform, harness-compatible convention for every task.
+
+**Multiple input tables:** give each its own variable and record the join with the
+pandas API.
+```python
+data   = skrub.as_data_op("train.csv").skb.apply_func(pd.read_csv)
+labels = skrub.as_data_op("labels.csv").skb.apply_func(pd.read_csv)
+df = data.merge(labels, on="ID", how="inner")
+y = df["target"].skb.mark_as_y()
+X = df.drop(columns=["target"]).skb.mark_as_X()
+```
+
+---
+
+## 4. Recording ordinary dataframe operations
+
+Inside the plan you use the normal pandas API and skrub records it.
+
+- **Column access / slicing / arithmetic** is recorded transparently:
+  ```python
+  y  = data["price"].skb.mark_as_y()
+  X2 = X.assign(area=X["w"] * X["h"])     # use assign, not X["a"] = ...
+  X3 = X2.drop(columns=["w", "h"])
+  ```
+- **Prefer `.assign(...)`** to create new columns rather than in-place `X["new"] = ...`.
+- **`.skb.drop` / `.skb.select` vs pandas `.drop` / `[]`:** the `.skb` versions
+  *freeze the exact column list at fit time* and reapply it on every fold, which
+  is safer. Prefer them for feature-subset selection.
+
+### Applying a plain function — `apply_func` / `deferred`
+For a generic function like `np.log1p`, `pd.to_datetime`, `np.sin` use
+`apply_func` (NOT `.skb.apply`, which is only for scikit-learn estimators):
+
+```python
+import numpy as np
+y_log = y.skb.apply_func(np.log1p)   # transform the target (AFTER mark_as_y;
+                                     # invert at predict time — section 8)
+X_dt  = X.assign(dt=X["datetime"].skb.apply_func(pd.to_datetime))
+X_sin = X.assign(s=(X["f3"].skb.apply_func(np.sin)) * 2.0)
+```
+`X.skb.apply_func(f, *a, **k)` == `skrub.deferred(f)(X, *a, **k)`. Use
+`skrub.deferred` to record any custom multi-arg function:
+```python
+@skrub.deferred
+def combine(a, b):
+    return a.merge(b, on="id")
+merged = combine(table_a, table_b)
+```
+
+### Prefer fine-grained recorded steps over one opaque `deferred` block
+
+A `skrub.deferred` function becomes a **single node** in the DAG: a multi-step
+feature-engineering function shows up in `describe_steps()` / `full_report()`
+as one opaque `Call 'add_feats'`, with no per-operation previews and nothing to
+inspect inside it. The same logic written as recorded operations exposes every
+step in the graph. Reserve `skrub.deferred` / `apply_func` for a *single*
+operation that genuinely cannot be expressed as recorded ops — e.g. the
+function call itself (`pd.to_datetime`) or the eval-mode-gated prediction
+post-processing of section 8.
+
+```python
+# AVOID: ~10 operations hidden inside one opaque DAG node
+@skrub.deferred
+def add_feats(df):
+    d = pd.to_datetime(df["Date of Transfer"])
+    return df.assign(year=d.dt.year, dow=d.dt.dayofweek,
+                     dist_pt=df["District"] + "|" + df["Property Type"])
+X = add_feats(X)
+
+# PREFER: the same logic as fine-grained recorded steps
+date = X["Date of Transfer"].skb.apply_func(pd.to_datetime)
+X = X.assign(
+    year=date.dt.year,            # attribute access (.dt, .str, ...) is recorded
+    dow=date.dt.dayofweek,
+    day_idx=(date - pd.Timestamp("1995-01-01")).dt.days,
+    dist_pt=X["District"] + "|" + X["Property Type"],
+)
+```
+
+A derived DataOp referenced several times (`date` above) is computed **once**
+and shared between the downstream nodes, so there is no performance penalty for
+the fine-grained version.
+
+> **`np.log1p` caution:** only valid for a strictly-positive target (it produces
+> NaN for values <= -1, which then crashes model fitting). Skip the log transform
+> if the target can be zero/negative or is already well-scaled.
+
+A plain pandas `.apply` on a selected sub-frame broadcasts an elementwise function
+across its columns (also recorded):
+```python
+X_skewed_log = X_skewed.apply(np.log1p)
+```
+
+---
+
+## 5. Encoding: turning raw columns into a numeric matrix
+
+A model needs an all-numeric, clean matrix. Two strategies.
+
+### Strategy A (recommended default): `TableVectorizer`
+`skrub.TableVectorizer()` inspects each column and applies a sensible encoder
+(numbers passed through, low-cardinality categoricals one-hot encoded,
+high-cardinality strings encoded, dates expanded). It handles mixed real-world
+data with almost no configuration:
+
+```python
+from skrub import TableVectorizer
+X_vec = X.skb.apply(TableVectorizer())
+pred  = X_vec.skb.apply(HistGradientBoostingRegressor(), y=y)
+```
+
+> **Important — TableVectorizer does NOT impute missing numeric values.** It
+> leaves NaN in numeric columns. NaN-tolerant models
+> (`HistGradientBoostingRegressor/Classifier`) handle that natively, but linear
+> models, SVMs, KNN, etc. will crash on NaN. For those, add an imputer **after**
+> the vectorizer:
+> ```python
+> from sklearn.impute import SimpleImputer
+> from sklearn.linear_model import Ridge
+> X_vec = X.skb.apply(TableVectorizer()).skb.apply(SimpleImputer())
+> pred  = X_vec.skb.apply(Ridge(), y=y)
+> ```
+
+Customise per column kind:
+```python
+from skrub import TableVectorizer, StringEncoder
+from sklearn.preprocessing import OneHotEncoder
+tv = TableVectorizer(
+    high_cardinality=StringEncoder(),
+    low_cardinality=OneHotEncoder(handle_unknown="ignore", sparse_output=False),
+)
+```
+Useful skrub encoders: `TableVectorizer`, `Cleaner`, `DatetimeEncoder`,
+`StringEncoder`, `TextEncoder`, `GapEncoder`, `MinHashEncoder`,
+`SimilarityEncoder`, `ToDatetime`, `ToCategorical`, `SquashingScaler`. A ready
+baseline: `skrub.tabular_pipeline("regressor")` / `tabular_pipeline("classifier")`.
+
+### Strategy B: explicit per-group encoding with selectors + concat
+For precise control (mirroring a sklearn `ColumnTransformer`): split by
+**selectors**, encode each part, then `concat` horizontally.
+
+```python
+import skrub
+from skrub import selectors as s
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import OneHotEncoder
+
+num = X.skb.select(s.numeric())
+cat = X.skb.select(s.string() | s.categorical())
+
+num_v = num.skb.apply(SimpleImputer(strategy="median"))
+cat_v = (cat.skb.apply(SimpleImputer(strategy="most_frequent"))
+            .skb.apply(OneHotEncoder(handle_unknown="ignore", sparse_output=False)))
+
+X_vec = num_v.skb.concat([cat_v], axis=1)   # note: others is a LIST
+```
+
+> skrub works on **dense** arrays — always pass `sparse_output=False` to `OneHotEncoder`.
+
+---
+
+## 6. Selectors — choosing columns declaratively
+
+You **cannot** iterate over `X.columns` inside the plan. Use `skrub.selectors`
+(import `from skrub import selectors as s`). Apply with `X.skb.select(sel)` (keep)
+or `X.skb.drop(sel)` (remove).
+
+| Selector | Matches |
+|---|---|
+| `s.all()` | every column |
+| `s.numeric()` | numeric columns |
+| `s.integer()` / `s.float()` | integer / float columns |
+| `s.string()` | string columns |
+| `s.categorical()` | categorical-dtype columns |
+| `s.boolean()` | boolean columns |
+| `s.any_date()` | datetime columns |
+| `s.has_dtype(dtype, ...)` | columns of given dtype(s) |
+| `s.cardinality_below(k)` | columns with fewer than `k` unique values |
+| `s.has_nulls(p=0.0)` | columns whose null proportion exceeds `p` |
+| `s.glob("pat*")` | column names matching a shell glob |
+| `s.regex("pat")` | column names matching a regex |
+| `s.cols("a", "b")` | the named columns |
+
+Predicate selectors (most flexible):
+```python
+low_card = s.filter(lambda col: col.dtype != "object" and col.nunique() < 10)  # by column
+ordinal  = s.filter_names(lambda name: "ordinal" in name or "cat" in name)     # by name
+```
+Combine with set algebra: `|` union, `&` intersection, `-` difference,
+`~`/`s.inv(sel)` complement.
+```python
+cats = s.string() | s.categorical()
+non_id_numeric = s.numeric() - s.cols("Id")
+```
+
+**Broadcasting:** `X.skb.apply(SomeTransformer())` over a multi-column frame
+broadcasts the transformer (one clone per column for single-column transformers),
+eliminating manual `for col in cols:` loops. A custom per-column transformer must
+subclass `BaseEstimator, TransformerMixin` and operate on a single-column frame:
+
+```python
+from sklearn.base import BaseEstimator, TransformerMixin
+import pandas as pd
+
+class RankEncoder(BaseEstimator, TransformerMixin):
+    def fit(self, X, y=None):
+        col = X.columns[0]
+        self.vocab_ = X[col].value_counts().rank(method="dense", ascending=False)
+        return self
+    def transform(self, X):
+        col = X.columns[0]
+        return pd.DataFrame({col: X[col].map(self.vocab_)})
+
+high_card = X.skb.select(s.filter(lambda c: c.nunique() >= 30))
+high_card_v = high_card.skb.apply(RankEncoder())   # auto-broadcast to each col
+```
+
+---
+
+## 7. Applying estimators — `.skb.apply`
+
+```python
+node.skb.apply(estimator, *, y=None, cols=..., exclude_cols=None,
+               allow_reject=False, unsupervised=False)
+```
+- **Transformer:** `X_v = X.skb.apply(StandardScaler())`. Restrict to a subset with
+  `cols=` (name, list, or selector) or `exclude_cols=`.
+- **Predictor:** pass the target → `pred = X_v.skb.apply(model, y=y)`. The result is
+  the prediction node.
+- `allow_reject=True` lets a transformer skip columns it can't handle (e.g.
+  `ToDatetime()` on all columns converts parseable strings, passes the rest through).
+- `unsupervised=True` for estimators that need no `y`.
+
+Multiple models on the same features, merged:
+```python
+p1 = X_vec.skb.apply(Model(), y=labels["label1"])
+p2 = X_vec.skb.apply(Model(), y=labels["label2"])
+pred = p1.skb.concat([p2], axis=1)
+```
+
+---
+
+## 8. Target transforms — mark raw y, invert at predict time
+
+The CV score is computed against the node marked with `mark_as_y` (verified).
+Two rules follow:
+
+1. **Always mark the RAW target.** Never transform y before `mark_as_y` — that
+   silently changes the scoring domain, and pipelines with and without the
+   transform stop being comparable (a log-space RMSE and a raw-space RMSE end
+   up sorted together in the same leaderboard).
+2. If you fit on a transformed target (e.g. `log1p` for a skewed price), apply
+   the **inverse to the predictions** so the plan's output is back in the raw
+   domain — but **gated on the eval mode**: during fit, a predictor node
+   evaluates to the *fitted estimator*, not predictions, so an ungated
+   `np.expm1` (or any arithmetic on prediction nodes) raises
+   `TypeError: unsupported operand ...` inside the CV loop.
+
+```python
+import numpy as np
+
+y     = data["Price"].skb.mark_as_y()        # RAW target
+X     = data.drop(columns=["Price"]).skb.mark_as_X()
+y_log = y.skb.apply_func(np.log1p)           # transform INSIDE the plan
+pred_log = X_vec.skb.apply(model, y=y_log)
+
+def expm1_predictions(pred, mode):
+    if mode == "fit":     # the node's value is the fitted estimator here
+        return None
+    return np.expm1(pred)
+
+pred = pred_log.skb.apply_func(expm1_predictions, skrub.eval_mode())
+```
+
+The same gating applies to **any** computation on prediction nodes (clipping,
+weighted averaging of two models' predictions, ...).
+
+Metric note: with predictions back in the raw domain you can still score by
+relative error — `scoring="neg_root_mean_squared_log_error"` (RMSLE) is
+numerically identical to RMSE on the log-space predictions, while every
+pipeline (log target or not) stays comparable. RMSLE rejects negative
+predictions, so add `np.clip(pred, 0, None)` in the non-fit branch when the
+model was fit on a raw target and could extrapolate below zero.
+
+`eval_mode()` evaluates to `"preview"`, `"fit"`, `"transform"`, `"predict"`, etc.
+`.skb.match(mapping, default=...)` picks by mode; `cond.skb.if_else(a, b)` branches
+on a boolean DataOp.
+
+---
+
+## 9. Scoring with `make_grid_search` (THE main task)
+
+Always score with a grid search run on the captured data and read `results_`.
+Pass **no `cv=`** — the splitter set on `mark_as_X` (section 3) drives:
+
+```python
+search = pred.skb.make_grid_search(n_jobs=1, fitted=True, refit=False,
+                                   scoring="r2")
+print(search.results_)
+best_score = search.results_["mean_test_score"].iloc[0]   # row 0 = best
+```
+
+### `results_` shape (verified)
+- It is a **pandas DataFrame, sorted best-first** (row 0 has the highest score).
+- **No choices in the plan** → one row, columns `['mean_test_score']`.
+- **With choices** → one row per parameter combination; each named choice becomes
+  its own column plus `mean_test_score`. Example with a choice named `"alpha"`:
+  ```
+     alpha  mean_test_score
+  0    1.0         0.921894
+  1    0.1         0.921886
+  2   10.0         0.919758
+  ```
+
+### `scoring` strings (scikit-learn)
+Regression: `"r2"`, `"neg_root_mean_squared_error"`,
+`"neg_mean_absolute_error"`, `"neg_mean_squared_error"`,
+`"neg_root_mean_squared_log_error"` (RMSLE — relative error for skewed,
+strictly-positive targets; predictions must be >= 0).
+Classification: `"accuracy"`, `"roc_auc"`, `"f1"`, `"neg_log_loss"`,
+`"average_precision"`. (`neg_*` scorers are negated so that higher = better.)
+
+### Custom / weighted metrics — declare them in the plan with `with_scoring`
+
+A scorer **string** is all most tasks need (passed to the harness as
+`--scoring`). When the metric is a custom callable, or needs **per-row
+`sample_weight`**, a string can't express it — declare the scorer **in the
+plan** with `.skb.with_scoring(scorer, kwargs=..., name=...)`. This is the
+scoring analog of setting the CV on `mark_as_X` (section 3), and the priority is
+the same: skrub uses the plan's scorer **only when `make_grid_search` is called
+with `scoring=None`** — a passed `scoring=` overrides it. The harness detects a
+`with_scoring` node and passes `scoring=None` so your scorer drives; run
+ml-score **without `--scoring`** and it locks the scorer's `name`.
+
+```python
+from sklearn.metrics import make_scorer
+
+def weighted_r2(y_true, y_pred, sample_weight=None):
+    ...
+
+scorer = make_scorer(weighted_r2, response_method="predict")
+pred = X_feat.skb.apply(model, y=y).skb.with_scoring(
+    scorer, kwargs={"sample_weight": X["weight"]}, name="weighted_r2")
+```
+
+- **`kwargs` may be DataOps.** `kwargs={"sample_weight": X["weight"]}` is
+  evaluated **per fold** on that fold's rows, so the scorer receives the test
+  fold's weights, correctly aligned with the predictions (verified). Always pass
+  `name=` — it becomes the locked metric label on the leaderboard.
+- **Keep the weight column in X, exclude it from the model.** `sample_weight`
+  must derive from the marked `X` so it is split per fold; drop it only from the
+  *model's* features, not from `X`:
+  ```python
+  X, y = load_xy(target="resp", groups="date_id")  # weight stays in X
+  feats = X.skb.drop("weight")                      # model sees all but weight
+  pred  = feats.skb.apply(model, y=y).skb.with_scoring(
+              scorer, kwargs={"sample_weight": X["weight"]}, name="weighted_r2")
+  ```
+- In this project the scorer is set once **centrally in `common.py`**
+  (`SCORER`/`SCORER_NAME` + `attach_scoring`), so every pipeline scores
+  identically — the harness locks it and refuses a different metric without
+  `--change-metric`, exactly as for string scorers. Use a **single** scorer per
+  workspace: the leaderboard tracks one metric (`mean_test_score`).
+
+### Critical rule for grid search: choices must be DISCRETE
+`make_grid_search` **rejects continuous `choose_float` / `choose_int`** (it raises
+`ValueError: Cannot use grid search with continuous numeric ranges`). To tune with
+grid search, make the choice enumerable:
+- give it `n_steps`: `skrub.choose_float(0.1, 100, log=True, n_steps=3, name="alpha")`
+- or use `skrub.choose_from([...])` with explicit values
+- or switch to `pred.skb.make_randomized_search(n_iter=..., scoring=...)`,
+  which accepts continuous ranges (still no `cv=` — it comes from `mark_as_X`).
+
+A plan with **no choices at all** is perfectly valid — the grid search just
+cross-validates that single pipeline and `results_` has one row. This is the
+normal case when you only want to score one candidate.
+
+---
+
+## 10. Hyperparameter choices with `choose_*`
+
+Replace any hard-coded hyperparameter (or even the estimator itself) with a choice;
+skrub collects all choices and explores them in the search.
+
+```python
+import skrub
+from sklearn.linear_model import Ridge
+from sklearn.ensemble import HistGradientBoostingRegressor
+
+model = skrub.choose_from(
+    {
+        "ridge": Ridge(alpha=skrub.choose_from([0.1, 1.0, 10.0], name="alpha")),
+        "hgb":   HistGradientBoostingRegressor(
+                    learning_rate=skrub.choose_float(0.01, 0.3, log=True,
+                                                     n_steps=4, name="lr")),
+    },
+    name="model",
+)
+pred = X_vec.skb.apply(model, y=y)
+search = pred.skb.make_grid_search(fitted=True, refit=False, scoring="r2")  # cv on mark_as_X
+print(search.results_)
+```
+
+Choice constructors:
+- `skrub.choose_from(outcomes, *, name=None)` — list or dict of options (options can
+  be estimators or nested choices).
+- `skrub.choose_float(low, high, *, log=False, n_steps=None, name=None, default=None)`
+- `skrub.choose_int(low, high, *, log=False, n_steps=None, name=None, default=None)`
+- `skrub.choose_bool(*, name=None, default=True)`
+- `skrub.optional(value, *, name=None)` — choose between `value` and skipping the step.
+
+> For **grid** search, every float/int choice needs `n_steps` (see section 9).
+> For **randomized** search (`make_randomized_search(n_iter=...)`), continuous
+> ranges are fine.
+
+> **Scope: one DAG = one pipeline.** `choose_*` is for hyperparameters (or
+> swapping one estimator step) *within* a single candidate pipeline. Do not
+> merge several alternative pipelines into one plan (e.g. `choose_from` over
+> whole prediction sub-graphs) — each scored candidate gets its own plan.
+
+Introspection: `pred.skb.describe_param_grid()`, `pred.skb.describe_defaults()`,
+`search.plot_results()`.
+
+---
+
+## 11. Inspection & debugging
+
+- `pred.skb.preview()` — value of the node on the (sub)sample data.
+- `pred.skb.eval({"data": some_df})` — run the plan on a given environment.
+- `pred.skb.describe_steps()` — text view of the graph.
+- `pred.skb.full_report()` — rich HTML report of every step.
+- `skrub.TableReport(df)` — exploratory report of a dataframe.
+
+**Performance while building:** every recorded op eagerly computes a preview on
+the var data. On a large table, either keep a `.skb.subsample(n=...)` right
+after the load (previews stay cheap, CV score unaffected) or wrap the plan
+construction in `with skrub.config_context(eager_data_ops=False):` to skip
+eager previews entirely.
+
+### Exploration scripts (data_exploration_N.py)
+
+For exploration scripts, **use plain `pd.read_csv` directly** — do NOT call
+`load_csv()` or `load_xy()`. Those helpers return DataOps (lazy recorded nodes
+for pipeline plans), not DataFrames. Calling `.skb.get_data()` on a DataOp
+returns an internal dict, not a DataFrame.
+
+```python
+# Correct pattern for exploration scripts
+import pandas as pd
+from common import WS_ROOT   # absolute path to the workspace root
+
+df = pd.read_csv(WS_ROOT / "input" / "train.csv", nrows=50_000)
+print(df.shape)
+print(df.dtypes)
+print(df.describe())
+```
+
+Only switch to `load_csv()` / `load_xy()` when you are building an actual
+pipeline plan (i.e. the file defines `pred`, `DESCRIPTION`, `PARENT`).
+
+---
+
+## 12. Common pitfalls (read before you ship)
+
+1. **`.skb.apply` is for scikit-learn estimators only.** Plain functions →
+   `.skb.apply_func` / `skrub.deferred`. Elementwise column math → pandas `.apply`.
+2. **Mark `X` early.** Real preprocessing must come *after* `mark_as_X()`.
+3. **`concat` takes a list:** `a.skb.concat([b, c], axis=1)`, never `a.skb.concat(b)`.
+4. **No Python loops over columns** in the plan — use selectors + broadcasting.
+5. **Dense only:** set `sparse_output=False` on `OneHotEncoder`.
+6. **`TableVectorizer` doesn't impute numeric NaNs** — add a `SimpleImputer` for
+   models that can't handle NaN (linear/SVM/KNN); `HistGradientBoosting*` is fine.
+7. **Grid search needs discrete choices** — give `choose_float`/`choose_int` an
+   `n_steps`, use `choose_from`, or switch to `make_randomized_search`.
+8. **Score with `fitted=True, refit=False`** — fitted runs the CV, refit=False skips
+   the unnecessary full-data refit. Read `results_["mean_test_score"].iloc[0]`.
+9. **`np.log1p` only for strictly-positive targets** (NaN otherwise → fit crash).
+10. **`subsample` only affects previews** unless `keep_subsampling=True`, so it does
+    not change your CV score — safe to leave in for fast previews.
+11. **Mark the RAW target.** The CV score is computed against the `mark_as_y`
+    node — transforming y before the mark silently changes the scoring domain
+    and breaks comparability across pipelines. Transform after the mark and
+    invert the predictions at predict time (section 8).
+12. **In fit mode a predictor node evaluates to the fitted estimator**, not
+    predictions. Gate any post-prediction computation (inverse transforms,
+    clipping, blending) on `skrub.eval_mode()` (section 8).
+13. **Don't wrap multi-step feature engineering in one `@skrub.deferred`
+    function** — it becomes a single opaque DAG node. Write fine-grained
+    recorded ops instead (section 4); `deferred` is only for a single operation
+    that can't be recorded (e.g. eval-mode-gated post-prediction code).
+14. **Set the CV on `mark_as_X`, never via `cv=` at scoring time** (section 3).
+    A passed `cv=` overrides `mark_as_X` (the reverse of what you'd guess), and
+    `split_kwargs` (e.g. `GroupKFold` `groups`) can *only* be wired on
+    `mark_as_X`. In this project the CV is set centrally in `common.py`
+    (`make_cv()` + `load_xy`); keep it fixed across the workspace — the harness
+    records it and warns if a later pipeline's split differs.
+
+---
+
+## 13. End-to-end worked example (score a candidate on a generic `train.csv`)
+
+```python
+import numpy as np
+import pandas as pd
+import skrub
+from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.model_selection import KFold
+
+# --- Recorded load ---
+data = (skrub.as_data_op("train.csv")
+             .skb.apply_func(pd.read_csv)
+             .skb.subsample(n=2000))                 # subsample: fast previews only
+
+# --- Target and features (mark early; CV splitter set on mark_as_X) ---
+y = data["SalePrice"].skb.mark_as_y()
+X = data.drop(columns=["SalePrice", "Id"]).skb.mark_as_X(
+        cv=KFold(n_splits=5, shuffle=True, random_state=42))
+
+# --- Light feature engineering (recorded) ---
+X = X.assign(TotalSF=X["1stFlrSF"] + X["2ndFlrSF"] + X["TotalBsmtSF"])
+
+# --- Encode all mixed-type columns in one shot ---
+X_vec = X.skb.apply(skrub.TableVectorizer())
+
+# --- Model with one discrete tunable hyperparameter ---
+model = HistGradientBoostingRegressor(
+    learning_rate=skrub.choose_float(0.01, 0.3, log=True, n_steps=4, name="lr"),
+    random_state=42,
+)
+pred = X_vec.skb.apply(model, y=y)
+
+# --- Score the plan by cross-validation. This is the deliverable. ---
+#     No cv= — the KFold set on mark_as_X above drives.
+search = pred.skb.make_grid_search(n_jobs=1, fitted=True, refit=False,
+                                   scoring="r2")
+print(search.results_)
+print("Best CV R2:", search.results_["mean_test_score"].iloc[0])
+```
