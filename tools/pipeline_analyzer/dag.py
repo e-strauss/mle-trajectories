@@ -133,6 +133,90 @@ def _readable_label(op) -> str:
     return text if text else type(op).__name__
 
 
+def _callable_name(fn) -> str | None:
+    if fn is None:
+        return None
+    n = getattr(fn, "__name__", None)
+    if n:
+        return str(n)
+    m = re.search(r"'([\w.]+)'", repr(fn))  # e.g. "<ufunc 'deg2rad'>"
+    return m.group(1) if m else None
+
+
+def _label_arg(op) -> str | None:
+    """The argument inside the first parens of the readable label, e.g.
+    ``NumericOp(square)`` -> ``square``. Length/comma-capped so a data payload
+    (column lists, literals) can't blow up the key space."""
+    m = re.match(r"[^()]+\(([^)]*)\)", _readable_label(op))
+    if not m:
+        return None
+    inner = m.group(1).strip()
+    if not inner or "," in inner or len(inner) > 24:
+        return None
+    return inner
+
+
+def _expr_str(expr) -> str:
+    """Data-free symbolic string for a map entry's :class:`ColumnExpr`.
+
+    Prefers ``to_pandas_query`` (backticked columns + operators); that returns
+    ``None`` when the tree contains an ``OperandLeaf`` (a graph-fed column, outside
+    the pure-query grammar), so we fall back to the expr's symbolic ``repr``
+    (e.g. ``(Col('Elevation') - OperandLeaf($2))``). Hex ids are scrubbed so the
+    same expression matches across pipelines.
+    """
+    q = None
+    try:
+        q = expr.to_pandas_query({})
+    except Exception:
+        q = None
+    return _HEX_ID.sub("0xX", q if isinstance(q, str) else repr(expr))
+
+
+def _op_subtype(op) -> str | None:
+    """Discriminator that makes physical stats more specific.
+
+    Low-cardinality *operation-kind* for most families (sin/cos/square numeric
+    maps, glob/dtype column selectors), but assign-maps are keyed by their
+    *full symbolic expression* (every ``col = expr``) so structurally distinct
+    maps are counted separately. Single-column projections still carry no stable
+    key and stay aggregated at the class level (returns None).
+    """
+    tn = type(op).__name__
+    # Column selectors -> selector category (glob, filter, numeric, all, ...).
+    sel = getattr(op, "selector", None)
+    if sel is not None:
+        head = repr(sel).split("(", 1)[0].strip()
+        return head or type(sel).__name__
+    # Boolean-mask / positional-index selections -> the SelectionKind name.
+    kind = getattr(op, "kind", None)
+    if kind is not None:
+        return getattr(kind, "name", None) or str(kind)
+    # Assign-maps -> full symbolic expression of every assigned column.
+    entries = getattr(op, "entries", None)
+    if isinstance(entries, dict) and entries:
+        return "; ".join(f"{name}={_expr_str(expr)}" for name, expr in entries.items())
+    # Literal-name column projections (``df[key]``) -> the projected column(s).
+    if "ColumnProjectionOp" in tn:
+        key = getattr(op, "key", None)
+        if isinstance(key, (list, tuple)):
+            return "[" + ",".join(map(str, key)) + "]"
+        if key is not None:
+            return str(key)
+    # Estimator ops -> the concrete estimator class (XGBClassifier, DropCols, ...).
+    est = getattr(op, "estimator", None)
+    if est is not None:
+        return type(est).__name__
+    # Numeric element-wise maps -> operation name; generic method calls -> method.
+    if "NumericOp" in tn or "MethodCallOp" in tn:
+        return _callable_name(getattr(op, "func", None)) or _label_arg(op)
+    # Projection / string / metadata ops carrying an explicit dataframe method.
+    method = getattr(op, "method", None)
+    if isinstance(method, str) and method:
+        return method
+    return None
+
+
 def _estimator_info(op):
     """(estimator_class, {param: str_value}) for estimator ops, else None.
 
@@ -173,6 +257,14 @@ class Node:
     is_choice: bool = False
     outcome_names: list = field(default_factory=list)
     estimator: tuple | None = None   # (class_name, params) or None
+    subtype: str | None = None       # operation-kind discriminator (see _op_subtype)
+
+    @property
+    def specific_label(self) -> str:
+        """``op_type`` refined with its operation kind, e.g.
+        ``NumericOp[square]`` / ``PandasColumnSelectorOp[glob]``. Falls back to
+        the bare ``op_type`` when there is no low-cardinality discriminator."""
+        return self.op_type if not self.subtype else f"{self.op_type}[{self.subtype}]"
 
 
 @dataclass
@@ -182,10 +274,11 @@ class Dag:
     order: list               # sigs in topological order (inputs before op)
     reprs: dict               # sig -> readable label (convenience)
 
-    def histogram(self) -> dict:
+    def histogram(self, specific: bool = False) -> dict:
         h = {}
         for n in self.nodes.values():
-            h[n.op_type] = h.get(n.op_type, 0) + 1
+            k = n.specific_label if specific else n.op_type
+            h[k] = h.get(k, 0) + 1
         return h
 
     def estimators(self) -> list:
@@ -232,6 +325,7 @@ def build_dag(root) -> Dag:
                 is_choice=isinstance(op, ChoiceOp),
                 outcome_names=outcome,
                 estimator=_estimator_info(op),
+                subtype=_op_subtype(op),
             )
             reprs[s] = label
             order.append(s)

@@ -20,6 +20,10 @@ from pathlib import Path
 import skrub
 
 from stratum.optimizer._optimize import logical_optimize, OptConfig
+from stratum.optimizer._op_utils import topological_iterator
+from stratum.optimizer.physical._plan_context import PlanContext
+from stratum.optimizer.physical._lowering import lower_to_physical
+from stratum.optimizer.physical._impl_selection import select_implementations
 
 from .dag import Dag, build_dag
 
@@ -37,6 +41,8 @@ class Pipeline:
     doc: str | None               # module docstring (the agent's rationale)
     dag: Dag | None               # None if extraction failed
     error: str | None = None      # populated when import/extraction failed
+    phys_dag: Dag | None = None   # physical DAG (default lowering + selection); None if unavailable
+    phys_error: str | None = None # populated when physical extraction failed
 
     @property
     def ok(self) -> bool:
@@ -64,14 +70,16 @@ def load_pipeline(module_name: str, pipe_dir: Path, *, unroll_choices: bool = Fa
             pred = getattr(mod, "pred", None)
             if pred is None:
                 raise AttributeError(f"{module_name} defines no module-level `pred`")
-            root = logical_optimize(pred, OptConfig(unroll_choices=unroll_choices))
+            config = OptConfig(unroll_choices=unroll_choices)
+            root = logical_optimize(pred, config)
             dag = build_dag(root)
+            phys_dag, phys_error = _physical_dag(pred, config)
         return Pipeline(
             name=module_name, path=path,
             parent=getattr(mod, "PARENT", None),
             description=getattr(mod, "DESCRIPTION", None),
             doc=(mod.__doc__ or "").strip() or None,
-            dag=dag,
+            dag=dag, phys_dag=phys_dag, phys_error=phys_error,
         )
     except Exception as e:  # noqa: BLE001 - want to report, not crash the batch
         return Pipeline(
@@ -81,6 +89,33 @@ def load_pipeline(module_name: str, pipe_dir: Path, *, unroll_choices: bool = Fa
             doc=None, dag=None,
             error=f"{type(e).__name__}: {e}\n{traceback.format_exc(limit=3)}",
         )
+
+
+def _physical_dag(pred, config: OptConfig):
+    """Best-effort physical DAG: lower the logical IR with the default rules and
+    run default implementation selection (concrete backend ops like
+    ``PandasReadCSV``). Returns ``(Dag | None, error | None)`` -- never raises, so
+    a physical-lowering failure only drops physical stats for this one pipeline.
+
+    We re-run ``logical_optimize`` from ``pred`` (lowering mutates the DAG in
+    place, and the caller already snapshotted the logical DAG from its own root).
+    ``select_implementations`` stringifies each op for a debug log via ``__str__``,
+    which does ``len(op.name)``; the CSV read op's ``name`` is a ``PosixPath``
+    (``common.load_csv`` wraps a ``Path``), so we coerce non-``str`` names to
+    ``str`` first. This is display-only and does not affect selection.
+    """
+    try:
+        root = logical_optimize(pred, config)
+        ctx = PlanContext.from_flags()
+        root = lower_to_physical(root, ctx)
+        for op in topological_iterator(root):
+            name = getattr(op, "name", None)
+            if name is not None and not isinstance(name, str):
+                op.name = str(name)
+        root = select_implementations(root, ctx)
+        return build_dag(root), None
+    except Exception as e:  # noqa: BLE001 - physical stats are best-effort
+        return None, f"{type(e).__name__}: {e}"
 
 
 def _safe_module_attr(module_name, pipe_dir, attr):

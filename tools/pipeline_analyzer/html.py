@@ -40,6 +40,7 @@ table{border-collapse:collapse;width:100%;font-size:13px}
 td,th{border-bottom:1px solid var(--border);padding:5px 8px;text-align:left}
 th{color:var(--muted);font-weight:600}
 code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+td.mono{overflow-wrap:anywhere}
 .pill{display:inline-block;font-size:11px;padding:1px 8px;border-radius:20px;border:1px solid var(--border);color:var(--muted)}
 .err{color:var(--rem)}
 .muted{color:var(--muted)}
@@ -198,21 +199,18 @@ def _hist_counts(dag):
     return f"<table><tr><th>operator</th><th>count</th></tr>{rows}</table>"
 
 
-def _aggregate_section(lineage: Lineage):
-    """High-level operator statistics across all successfully analyzed pipelines.
+def _stats_block(heading, anchor, per_pipe, *, note=""):
+    """One operator-statistics table over a list of per-pipeline histograms.
 
-    For each operator type we report the absolute total (summed over all
-    pipelines), how many pipelines contain it, and the per-pipeline count
-    distribution (mean / median / std / min / max). Distribution stats are taken
-    over *all* analyzed pipelines, so a pipeline lacking the op contributes 0.
+    For each operator type: absolute total (summed over all pipelines), how many
+    pipelines contain it, and the per-pipeline count distribution
+    (mean / median / std / min / max). Distribution stats span *all* pipelines in
+    ``per_pipe``, so a pipeline lacking the op contributes 0.
     """
-    ok = [n for n in lineage.ordered() if n.pipeline.ok]
-    N = len(ok)
+    N = len(per_pipe)
     if N == 0:
         return ""
-
-    per_pipe = [n.pipeline.dag.histogram() for n in ok]
-    op_types = set().union(*per_pipe) if per_pipe else set()
+    op_types = set().union(*per_pipe)
 
     stats = []
     for t in op_types:
@@ -244,9 +242,35 @@ def _aggregate_section(lineage: Lineage):
     summary = (
         f'<p class="muted">{N} pipelines · {len(op_types)} distinct operator types · '
         f'{sum(sizes)} operator instances total · DAG size per pipeline: '
-        f'median {statistics.median(sizes):g}, min {min(sizes)}, max {max(sizes)}. '
+        f'median {statistics.median(sizes):g}, min {min(sizes)}, max {max(sizes)}.{note} '
         f'Distribution stats span all {N} pipelines (a pipeline lacking an op counts as 0).</p>')
-    return f'<h2 id="agg" style="border:0">Operator statistics</h2>{summary}<div class="card">{table}</div>'
+    return f'<h2 id="{anchor}" style="border:0">{esc(heading)}</h2>{summary}<div class="card">{table}</div>'
+
+
+def _aggregate_section(lineage: Lineage):
+    """High-level operator statistics: one table at the logical-IR altitude, and
+    one at the physical altitude (default lowering + implementation selection)."""
+    ok = [n for n in lineage.ordered() if n.pipeline.ok]
+    if not ok:
+        return ""
+
+    out = _stats_block("Operator statistics — logical IR", "agg-logical",
+                       [n.pipeline.dag.histogram() for n in ok])
+
+    phys_ok = [n for n in ok if n.pipeline.phys_dag is not None]
+    if phys_ok:
+        missing = len(ok) - len(phys_ok)
+        note = (" Physical lowering + default implementation selection; ops are"
+                " split by operation kind (e.g. NumericOp[square],"
+                " PandasColumnSelectorOp[glob]), and assign-maps by their full"
+                " symbolic expression.")
+        if missing:
+            note += f" {missing} pipeline(s) omitted (physical extraction failed)."
+        out += _stats_block("Operator statistics — physical (default selection)",
+                            "agg-physical",
+                            [n.pipeline.phys_dag.histogram(specific=True) for n in phys_ok],
+                            note=note)
+    return out
 
 
 def build_html(lineage: Lineage, *, title="Pipeline evolution", subtitle="", generated_note=""):
