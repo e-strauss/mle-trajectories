@@ -1,0 +1,130 @@
+data_dir: !!python/object/apply:pathlib.PosixPath
+- /
+- home
+- elias
+- github
+- mle-claude
+- tasks
+- playground-series-s6e7
+- input
+dataset_dir: !!python/object/apply:pathlib.PosixPath []
+desc_file: null
+goal: 'Files
+
+  train.csv - the training set, with health_condition as target test.csv - the test
+  set, used to predict the category for health_condition sample_submission.csv - a
+  sample submission file in the correct format
+
+  Evaluation
+
+  Submissions are evaluated on balanced accuracy between the predicted class and the
+  observed target.'
+eval: null
+log_dir: !!python/object/apply:pathlib.PosixPath
+- /
+- home
+- elias
+- github
+- MLEvolve-generic
+- runs
+- 20260727_170513_elated-tricky-partridge
+- logs
+log_level: INFO
+workspace_dir: !!python/object/apply:pathlib.PosixPath
+- /
+- home
+- elias
+- github
+- MLEvolve-generic
+- runs
+- 20260727_170513_elated-tricky-partridge
+- workspace
+preprocess_data: true
+copy_data: false
+exp_name: 20260727_170513_elated-tricky-partridge
+exp_id: mle-mlevolve-test
+torch_hub_dir: ''
+pretrain_model_dir: ''
+exec:
+  timeout: 1800
+  agent_file_name: runfile.py
+agent:
+  steps: 30
+  time_limit: 10800
+  initial_drafts: 3
+  seed: 42
+  data_preview: true
+  code:
+    model: ${oc.env:LLM_MODEL,"gemini-3.6-flash"}
+    temp: 1.0
+    base_url: ${oc.env:LLM_BASE_URL,"https://generativelanguage.googleapis.com"}
+    api_key: ${oc.env:LLM_API_KEY,""}
+  feedback:
+    model: ${oc.env:LLM_MODEL,"gemini-3.6-flash"}
+    temp: 1.0
+    base_url: ${oc.env:LLM_BASE_URL,"https://generativelanguage.googleapis.com"}
+    api_key: ${oc.env:LLM_API_KEY,""}
+  check_data_leakage: true
+  fusion_vs_evolution_prob: 0.3
+  branch_fusion_trigger_prob: 1.0
+  max_fusion_drafts: 2
+  use_global_memory: true
+  memory_similarity_threshold: 0.7
+  memory_embedding_device: cuda
+  memory_embedding_model_path: BAAI/bge-base-en-v1.5
+  search:
+    max_debug_depth: 20
+    debug_prob: 1.0
+    num_drafts: 5
+    metric_improvement_threshold: 0.0001
+    back_debug_depth: 3
+    num_bugs: 1
+    num_improves: 3
+    topk_max_improves: 10
+    max_improve_failure: 2
+    parallel_search_num: 3
+    branch_stagnation_threshold: 2
+    topk_stagnation_threshold: 4
+    top_candidates_size: 20
+    stagnation_window: 4
+    num_gpus: 0
+    explore_switch_start: 0.35
+    explore_switch_end: 0.55
+    min_exploration_weight: 0.2
+    topk_early_k: 5
+    topk_early_max_per_branch: 3
+    topk_late_k: 3
+    topk_late_max_per_branch: 2
+    force_backprop_late_threshold: 0.65
+    force_backprop_late_prob: 0.3
+    force_backprop_mid_threshold: 0.4
+    force_backprop_mid_modulo: 3
+    recent_best_window: 4
+    fusion_min_time_hours: 0.04
+    fusion_max_time_hours: 0.08
+    fusion_min_successful_nodes: 2
+    fusion_min_branches: 2
+    use_stagnation_detection: true
+  decay:
+    exploration_constant: 1.414
+    lower_bound: 0.5
+    alpha: 0.01
+    phase_ratios:
+    - 0.2
+    - 0.5
+  use_diff_mode: true
+  use_stepwise_generation: true
+  use_evolution: true
+  use_fusion: true
+  use_aggregation: true
+start_cpu_id: '0'
+cpu_number: '48'
+coldstart:
+  use_coldstart: false
+  task_json_path: engine/coldstart/competition_tag_classified.json
+  model_json_path: engine/coldstart/models_guidance_classified.json
+  description: ''
+use_grading_server: false
+no_submission_mode: true
+init_solution:
+  use: false
