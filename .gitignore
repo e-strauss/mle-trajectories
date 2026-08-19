@@ -1,2 +1,7 @@
 .idea
 .venv
+.env
+.env.local
+.skrubify.env
+
+**/input/**
