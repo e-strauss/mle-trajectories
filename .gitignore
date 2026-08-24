@@ -7,3 +7,9 @@
 **/input/**
 *.png
 __pycache__/
+
+*.csv
+*.json
+*.tsv
+*.parquet
+*.tfevents
