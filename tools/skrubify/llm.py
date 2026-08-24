@@ -5,12 +5,13 @@ rest of the tool (`--check`, `--print-prompt`) still works in an environment
 without it.
 
 Model strings are litellm's ``<provider>/<model>``. Pass ``--provider`` and
-``--model`` separately (``--provider gemini --model gemini-2.5-pro``), or a single
-fully-qualified ``--model gemini/gemini-2.5-pro``.
+``--model`` separately (``--provider gemini --model gemini-3.7-flash``), or a single
+fully-qualified ``--model gemini/gemini-3.7-flash``.
 """
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from pathlib import Path
 PROVIDERS: dict[str, tuple[str, str | None, tuple[str, ...]]] = {
     "openai":      ("openai",      "gpt-5",                  ("OPENAI_API_KEY",)),
     "anthropic":   ("anthropic",   "claude-sonnet-4-5",      ("ANTHROPIC_API_KEY",)),
-    "gemini":      ("gemini",      "gemini-2.5-pro",         ("GEMINI_API_KEY",)),
+    "gemini":      ("gemini",      "gemini-3.7-flash",       ("GEMINI_API_KEY",)),
     "vertex_ai":   ("vertex_ai",   "gemini-2.5-pro",         ()),
     "azure":       ("azure",       None,                     ("AZURE_API_KEY", "AZURE_API_BASE")),
     "openrouter":  ("openrouter",  None,                     ("OPENROUTER_API_KEY",)),
@@ -104,6 +105,26 @@ def missing_keys(model: str) -> list[str]:
     return []
 
 
+class LLMError(RuntimeError):
+    """An API call failed. Carries a short, actionable message, not a traceback."""
+
+
+def _short_error(exc: BaseException) -> str:
+    """One readable line out of a provider exception.
+
+    litellm wraps provider errors in long tracebacks whose useful part is a
+    status code and a `message` field buried in the response body.
+    """
+    text = str(exc)
+    detail = re.search(r"'message': '([^']{1,300})", text)
+    status = re.search(r"[Ee]rror code: (\d{3})", text)
+    parts = [type(exc).__name__]
+    if status:
+        parts.append(f"HTTP {status.group(1)}")
+    parts.append(detail.group(1) if detail else text.splitlines()[0][:300])
+    return " · ".join(parts)
+
+
 @dataclass
 class LLM:
     """Thin litellm wrapper: a chat call plus token/cost bookkeeping."""
@@ -130,7 +151,10 @@ class LLM:
             kwargs["max_tokens"] = self.max_tokens
         if self.timeout is not None:
             kwargs["timeout"] = self.timeout
-        response = litellm.completion(**kwargs)
+        try:
+            response = litellm.completion(**kwargs)
+        except Exception as exc:      # provider/transport error, already retried
+            raise LLMError(_short_error(exc)) from exc
         self.calls += 1
         usage = getattr(response, "usage", None)
         if usage is not None:

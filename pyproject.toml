@@ -10,6 +10,7 @@ dependencies = [
     "litellm>=1.97.0",
     "skorch>=1.4.0",
     "stratum-ai",
+    "tenacity>=8.0",   # litellm retry path (num_retries) imports it lazily
     "torch>=2.13.0",
     "xgboost>=3.3.0",
 ]

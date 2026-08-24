@@ -146,6 +146,10 @@ Hard requirements:
 6. Write fine-grained recorded operations. No Python loop over columns (use
    `skrub.selectors` + transformer broadcasting), no in-place `df["c"] = ...`
    (use `.assign(...)`), and no multi-step `@skrub.deferred` block.
+   Row filtering is recordable as well, including a frequency condition:
+   `counts = X["c"].value_counts()`, `bad = counts[counts < k].index`,
+   `data[~X["c"].isin(bad)].reset_index(drop=True)` -- never wrap that in
+   `apply_func` (guide section 4).
    EXCEPTION -- when the original builds NEW NAMED COLUMNS by looping over
    columns it discovered from the data (`for soil in soil_cols:
    X[f"{soil}_x_Elevation"] = ...`), put that loop inside a small

@@ -21,7 +21,7 @@ python -m skrubify ../tab_playground_dec_21/mle_star-run1/train0.py \
 # batch, explicit output dir
 python -m skrubify ../nyc_taxi_fare/mlevolve-run1/pipelines/*.py \
        -o ../nyc_taxi_fare/mlevolve-run1/skrubify \
-       --provider gemini --model gemini-2.5-pro --json-report run.json
+       --provider gemini --model gemini-3.7-flash --json-report run.json
 
 # validate pipelines (no LLM, no API key, no dataset needed)
 python -m skrubify --check ../tab_playground_dec_21/mle_star-run1/skrubify/init1.py

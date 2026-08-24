@@ -287,6 +287,43 @@ def _target_transform_check(source: str) -> list[tuple[str, str]]:
     return out
 
 
+def _udf_check(source: str) -> list[tuple[str, str]]:
+    """Advisory: `apply_func(<own function>)` that is probably expressible as ops.
+
+    `apply_func` / `deferred` collapse whatever they wrap into ONE opaque node
+    (guide pitfall 13). Two uses are legitimate and skipped here: a library call
+    that cannot be recorded (`pd.read_csv`, `np.sqrt`, `pd.to_datetime`) and an
+    eval-mode-gated post-prediction step (`apply_func(f, skrub.eval_mode())`).
+    A locally-defined dataframe->dataframe helper is usually neither: pandas
+    filtering, arithmetic, assignment, `value_counts`/`isin`/boolean masks all
+    record fine (guide section 4). Warning only -- some helpers genuinely cannot
+    be recorded.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    local_funcs = {n.name for n in ast.walk(tree)
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    out = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("apply_func", "deferred")):
+            continue
+        if "eval_mode" in ast.dump(node):        # gated post-prediction: fine
+            continue
+        first = node.args[0] if node.args else None
+        name = (first.id if isinstance(first, ast.Name) else
+                "<lambda>" if isinstance(first, ast.Lambda) else None)
+        if name and (name in local_funcs or name == "<lambda>"):
+            out.append((WARNING, f"line {node.lineno}: {node.func.attr}({name}) wraps "
+                        "your own function into ONE opaque plan node -- if its body "
+                        "is pandas (filtering, assignment, value_counts/isin, "
+                        "arithmetic), write it as recorded ops instead so each step "
+                        "is its own node (guide section 4)."))
+    return out
+
+
 def _arg_checks(source: str) -> list[tuple[str, str]]:
     """(level, message) pairs from checks over parsed call arguments."""
     out: list[tuple[str, str]] = []
@@ -325,6 +362,7 @@ def _arg_checks(source: str) -> list[tuple[str, str]]:
                            "fitted=True, refit=False, scoring=...)`."))
 
     out += _target_transform_check(source)
+    out += _udf_check(source)
 
     for lineno, args in _calls(source, ".skb.concat"):
         if args.strip() and not args.lstrip().startswith("["):

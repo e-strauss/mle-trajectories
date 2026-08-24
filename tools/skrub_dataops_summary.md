@@ -320,6 +320,35 @@ A derived DataOp referenced several times (`date` above) is computed **once**
 and shared between the downstream nodes, so there is no performance penalty for
 the fine-grained version.
 
+### Row filtering is recordable too — including frequency conditions
+
+A filter that depends on a *computed statistic* of a column still needs no
+`deferred`/`apply_func`. `value_counts()`, comparison, `.index`, `.isin(...)`,
+`~`, boolean-mask `df[mask]` and `reset_index` are all recorded, so the common
+"drop classes with fewer than `n_splits` rows before cross-validating" reads
+almost exactly like the eager code (verified equal to the loop-and-drop version
+row for row):
+
+```python
+raw_target         = data["Cover_Type"]
+class_counts       = raw_target.value_counts()
+problematic_classes = class_counts[class_counts < 3].index
+filtered = data[~raw_target.isin(problematic_classes)].reset_index(drop=True)
+```
+
+or, without materialising the class list, in one pass:
+
+```python
+sizes    = raw_target.groupby(raw_target).transform("size")
+filtered = data[sizes >= 3].reset_index(drop=True)
+```
+
+Both appear in `describe_steps()` as their individual operations
+(`CallMethod 'value_counts'`, `BinOp: lt`, `GetAttr 'index'`,
+`CallMethod 'isin'`, `UnaryOp: invert`, …) instead of one opaque
+`Call 'drop_rare_classes'`. Row filtering must sit **before** `mark_as_X` /
+`mark_as_y`, since it changes the number of rows (section 2).
+
 > **`np.log1p` caution:** only valid for a strictly-positive target (it produces
 > NaN for values <= -1, which then crashes model fitting). Skip the log transform
 > if the target can be zero/negative or is already well-scaled.

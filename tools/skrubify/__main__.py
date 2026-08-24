@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 from .core import Result, SkrubifyConfig, build_messages, default_out_path, skrubify_file
-from .llm import LLM, PROVIDERS, load_env, missing_keys, resolve_model
+from .llm import LLM, LLMError, PROVIDERS, load_env, missing_keys, resolve_model
 from .validate import (compare_scores, parse_scores,
                        parse_scores_with_precision, run_pipeline, validate)
 
@@ -221,7 +221,18 @@ def main(argv=None) -> int:
         out = _resolve_out(args, src, len(args.sources))
         if not args.quiet:
             print(f"skrubify {src} -> {out}  [{model}]", file=sys.stderr)
-        res = skrubify_file(src, out, cfg=cfg)
+        try:
+            res = skrubify_file(src, out, cfg=cfg)
+        except LLMError as exc:
+            # Auth/credit/quota failures are global, so stop rather than repeat the
+            # same error once per remaining file. Nothing was written for `src`.
+            remaining = args.sources[args.sources.index(src):]
+            print(f"! API call failed: {exc}", file=sys.stderr)
+            print(f"! stopped: {len(remaining)} file(s) not converted "
+                  f"({', '.join(p.name for p in remaining[:5])}"
+                  f"{', …' if len(remaining) > 5 else ''}). "
+                  "Existing outputs were left untouched.", file=sys.stderr)
+            return 3
         results.append(res)
         status = "ok" if res.ok else "NEEDS REVIEW"
         print(f"{status}: {out}  ({len(res.attempts)} attempt(s))")
