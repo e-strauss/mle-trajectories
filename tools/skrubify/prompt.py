@@ -49,6 +49,34 @@ Your job is a FAITHFUL TRANSLATION, not a redesign:
   silently changes WHICH ROWS are scored, and the score with it. If such logic
   cannot be expressed as recorded ops, use a custom `BaseCrossValidator`
   (rows that must stay in training) or a wrapper estimator -- never deletion.
+* **Reproduce the original's PREDICTION DECODING, bug included.** A script that
+  averages `predict_proba` columns and then scores `np.argmax(probs, axis=1)`
+  against the labels is comparing a POSITION in `classes_` with a label. Those
+  agree only when the labels are exactly `0..n-1`, and after these scripts drop
+  rare classes they usually are not -- every label above the gap is then counted
+  wrong no matter what the model predicts. `VotingClassifier(voting="soft")`
+  decodes through `classes_`, so it scores HIGHER and is NOT a faithful
+  replacement for manual probability averaging plus positional argmax. Keep the
+  arithmetic the original performed:
+
+  ```python
+  class PositionalArgmax(ClassifierMixin, BaseEstimator):
+      # predict() returns argmax INDICES, exactly as the original scored them
+      def __init__(self, estimator):
+          self.estimator = estimator
+
+      def fit(self, X, y):
+          self.estimator_ = clone(self.estimator).fit(X, y)
+          self.classes_ = np.unique(y)
+          return self
+
+      def predict(self, X):
+          return np.argmax(self.estimator_.predict_proba(X), axis=1)
+  ```
+
+  The same care applies to any other arithmetic the original does between
+  `predict*` and the metric (thresholding, clipping, rounding, a `+1` shift):
+  translate it, do not tidy it up.
 * BUT if the original itself scores SEVERAL VARIANTS in one script (an ablation
   study, a model comparison, a feature-set sweep -- it prints more than one
   score), the faithful translation fuses them into ONE plan with

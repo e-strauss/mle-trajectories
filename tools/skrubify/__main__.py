@@ -94,6 +94,24 @@ def _add_args(ap: argparse.ArgumentParser) -> None:
     g.add_argument("-q", "--quiet", action="store_true")
 
 
+def _headline_delta(score: float | None, score_s: float | None, n_new: int) -> None:
+    """Diff the two HEADLINE scores when the conversion produced a single one.
+
+    The pooled comparison only asks that the conversion's score appears SOMEWHERE
+    among the numbers the original printed -- a per-fold score of the original can
+    satisfy that by coincidence and hide a real difference in the number that
+    actually matters. `parse_score` prefers the "Final Validation Performance"
+    line, so diff that explicitly.
+    """
+    if n_new != 1 or score is None or score_s is None:
+        return
+    delta = score - score_s
+    verdict = ("identical" if delta == 0 else
+               "identical to float precision" if abs(delta) < 1e-12 else
+               "close" if abs(delta) < 1e-3 else "DIFFERENT")
+    print(f"  vs original final: {score_s!r}  delta {delta:+.6g}  ({verdict})")
+
+
 def _run_and_compare(pipeline: Path, source: Path | None, args) -> int:
     """Execute the pipeline (and optionally the original) and report the scores."""
     print(f"  running {pipeline.name} in {args.run_in} …", file=sys.stderr, flush=True)
@@ -123,6 +141,7 @@ def _run_and_compare(pipeline: Path, source: Path | None, args) -> int:
                   f"{[round(v, 6) for v in old_scores]}")
             print(f"  comparison:       "
                   f"{compare_scores(new_scores, old_scores, tol=tol)}")
+            _headline_delta(score, score_s, len(new_scores))
             return 0
     if not ok_s:
         # A multi-variant source (an ablation study) prints several scores and no
