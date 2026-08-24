@@ -117,6 +117,11 @@ RULES: tuple[Rule, ...] = (
     Rule("column-loop", "forbid", r"^\s*for\s+\w+\s+in\s+\w*[Xx]\w*\.columns\b",
          "you cannot loop over columns inside a plan -- use skrub.selectors plus "
          "transformer broadcasting (guide section 6).", ERROR, "plan"),
+    Rule("continuous-choice", "forbid", r"\bchoose_(float|int)\s*\(",
+         "grid search enumerates DISCRETE values only -- use "
+         "skrub.choose_from([...]) with explicit values."),
+    Rule("randomized-search", "forbid", r"\bmake_randomized_search\s*\(",
+         "score with make_grid_search, not make_randomized_search."),
     Rule("draw-graph-open", "forbid", r"draw_graph\s*\(\s*\)\s*\.open\s*\(",
          "do not open a graph viewer -- it blocks and needs a browser."),
     Rule("deferred-block", "forbid", r"^\s*@skrub\.deferred\b",

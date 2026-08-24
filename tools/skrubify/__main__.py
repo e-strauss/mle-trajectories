@@ -109,7 +109,12 @@ def _run_and_compare(pipeline: Path, source: Path | None, args) -> int:
     ok_s, score_s, detail_s = run_pipeline(source, args.run_in, python=args.python,
                                            timeout=args.run_timeout)
     if not ok_s:
-        print(f"  original could not be run for comparison: {detail_s}")
+        # A multi-variant source (an ablation study) prints several scores and no
+        # single "Final Validation Performance" line, so there is nothing to diff
+        # automatically -- show its output and let the reader compare it with the
+        # grid the fused plan printed.
+        print("  no single score parsed from the original; its output was:")
+        print("\n".join(f"    | {line}" for line in detail_s.splitlines()[-25:]))
         return 0
     delta = score - score_s
     verdict = ("identical" if score == score_s else

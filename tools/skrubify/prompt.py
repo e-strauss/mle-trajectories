@@ -40,6 +40,29 @@ Your job is a FAITHFUL TRANSLATION, not a redesign:
   `ShuffleSplit(n_splits=1, test_size=t, random_state=...)`.
 * Do NOT add feature engineering, tuning, `choose_from` choices, models or
   ensembling that the original does not have. Do not "improve" the pipeline.
+* BUT if the original itself scores SEVERAL VARIANTS in one script (an ablation
+  study, a model comparison, a feature-set sweep -- it prints more than one
+  score), the faithful translation fuses them into ONE plan with
+  `skrub.choose_from`, so a single grid search scores every variant and
+  `search.results_` has one row per variant:
+
+  ```python
+  variants = {
+      "baseline":        features.skb.apply(Model(n_estimators=100), y=y),
+      "n_estimators_50": features.skb.apply(Model(n_estimators=50), y=y),
+      "no_soil":         features.skb.drop(s.glob("Soil_Type*"))
+                                 .skb.apply(Model(n_estimators=100), y=y),
+  }
+  pred = skrub.choose_from(variants, name="variant").as_data_op()
+  ```
+
+  Rules for this case: name every variant after what the original called it;
+  enumerate EXACTLY the variants the original scores -- do not turn N specific
+  configurations into a cross-product that invents combinations the original
+  never ran (two independent `choose_from`s over 2 estimator sizes and 2 feature
+  sets score 4 cells, not 3); and use `choose_from([...])` with explicit values
+  only. `choose_float` / `choose_int` / `make_randomized_search` are never used
+  -- the grid search enumerates discrete values.
 * An inner train/validation split INSIDE an estimator (for early stopping, or a
   neural net's own validation) is legitimate and must be KEPT -- it is per-fit,
   not the outer CV. What must go is the *outer* fold loop over the whole table.
@@ -85,7 +108,7 @@ with skrub.config_context(eager_data_ops=False):
         search = pred.skb.make_grid_search(
             n_jobs=1, fitted=True, refit=False, scoring=<sklearn scorer string>
         )
-        print(search.results_)
+        print(search.results_)   # one row per variant when the plan has choices
         print(f"Final Validation Performance: {search.results_['mean_test_score'].iloc[0]}")
 ```
 

@@ -131,6 +131,34 @@ NoneType`. Fixed upstream in skrub 0.10 (`split_kwargs or {}`). Since this
 workspace pins 0.8.0 through stratum, the contract and the checks now require an
 explicit `split_kwargs={}`, which is valid on every version.
 
+### Ablation scripts become one fused-choice plan
+
+A script that scores SEVERAL variants in one run (an ablation study, a model
+comparison) is not converted into several pipelines: the variants become one
+named `skrub.choose_from` fused with `.as_data_op()`, so a single grid search
+scores all of them and `search.results_` has one row per variant. The contract
+requires exactly the variants the original ran — two independent choices over 2
+estimator sizes and 2 feature sets would score 4 cells where the original scored
+3 — and discrete `choose_from([...])` only (`choose_float`/`choose_int`/
+`make_randomized_search` are rejected by the checks).
+
+Verified on `mle_star-run4/ablation_0.py` (baseline / `n_estimators=50` /
+no-`Soil_Type`), one shot, all three variants matching the original to 12
+decimals:
+
+```
+                                                   variant  mean_test_score
+0                             Baseline Solution (Original)   0.943480001189
+1  Ablation 1: RandomForestClassifier with n_estimators=50   0.942739992289
+2               Ablation 2: Exclude all Soil_Type features   0.928539999686
+```
+
+The feature ablation came out as `X.skb.drop(s.glob("*Soil_Type*"))` rather than
+the original's list comprehension over `X.columns` (which a plan cannot express),
+and the rare-class filter as
+`data[raw_target.groupby(raw_target).transform("size") >= 3]` — a recorded
+reformulation of `value_counts()` + `isin` + index-based `drop`.
+
 ## Observed behaviour (gpt-5.5 / gpt-5.6-sol, real runs)
 
 - `mle_star-run1/train0_1.py` (LightGBM+XGBoost soft-vote with per-fold
@@ -143,7 +171,14 @@ explicit `split_kwargs={}`, which is valid on every version.
   target encoding, LightGBM/XGBoost/CatBoost + a torch ResNet with focal loss,
   weight optimisation) — a ~100-node plan that builds, in one shot once the rule
   scoping above was in place, in two with an early over-strict version.
-- Cost per conversion is roughly $0.15-0.55 at these prompt sizes.
+- `mle_star-run4/train0_1.py` (two forests, different per-fold training sets,
+  pooled out-of-fold soft vote) — one shot. It solved the "model 2 also trains on
+  the rare-class rows" requirement with a custom `BaseCrossValidator` that
+  appends those rows to every fold's train partition and never to validation,
+  plus a marker column in `X` that masks them out of model 1's `fit`. Score
+  0.943729998 vs the original's 0.94373: the residual is structural, since skrub
+  averages per-fold accuracies where the original pools all OOF rows into one.
+- Cost per conversion is roughly $0.13-0.55 at these prompt sizes.
 
 ## Adding examples
 
