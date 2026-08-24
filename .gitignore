@@ -5,3 +5,4 @@
 .skrubify.env
 
 **/input/**
+*.png
