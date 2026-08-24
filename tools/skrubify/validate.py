@@ -200,9 +200,17 @@ def compare_scores(new: list[float], old: list[float], tol: float = 1e-6) -> str
         return "no comparable scores"
     if len(new) == 1 and len(old) == 1:
         delta = new[0] - old[0]
+        # skrub scores with sklearn's higher-is-better convention, so an error
+        # metric comes back NEGATED (neg_root_mean_squared_error). The original
+        # script prints the plain positive error. Compare magnitudes in that case
+        # instead of reporting a spurious 2x delta.
+        flipped = new[0] * old[0] < 0 and abs(abs(new[0]) - abs(old[0])) < abs(delta)
+        if flipped:
+            delta = abs(new[0]) - abs(old[0])
         verdict = ("identical" if delta == 0 else
                    "close" if abs(delta) < 1e-3 else "DIFFERENT")
-        return f"{new[0]!r} vs {old[0]!r}  delta {delta:+.6g}  ({verdict})"
+        note = "  [sign-flipped: neg_* scorer vs positive error metric]" if flipped else ""
+        return f"{new[0]!r} vs {old[0]!r}  delta {delta:+.6g}  ({verdict}){note}"
     matched, unmatched = 0, []
     remaining = list(old)
     for value in new:

@@ -111,7 +111,24 @@ Your job is a FAITHFUL TRANSLATION, not a redesign:
   bases, before BaseEstimator. Early stopping survives the same way: an
   `early_stopping_rounds` / `eval_set` on an estimator applied directly in the
   plan has no eval set and must go, but inside such a wrapper -- fed by the
-  wrapper's own inner split -- it is correct and should be kept.
+  wrapper's own inner split -- it is correct and should be kept. Keeping early
+  stopping is REQUIRED, not one option among two: silently dropping
+  `early_stopping_rounds` trains the full `n_estimators` and shifts the score by
+  far more than any tolerance (measured: 0.03 RMSE, in the model's FAVOUR,
+  because a 50-round patience had been stopping it too early). The preferred form
+  is the `GetXY` + `fit_kwargs={"eval_set": ...}` pattern in the guide's section 7
+  -- a `how="no_wrap"` transformer that splits the fold's own training rows and
+  returns a dict, whose pieces are then passed to `fit_kwargs` as DataOps. USE
+  THAT PATTERN whenever the only reason a wrapper would exist is to hold an inner
+  split and an `eval_set`: copy it from the guide, keeping the original's patience,
+  `n_estimators` and split fraction. A wrapper estimator is correct ONLY when its
+  `fit` does something a recorded op cannot express anyway -- a torch loop, an
+  internal ensemble, per-fold class weights -- not merely to call
+  `train_test_split` before `model.fit`.
+  If the original early-stops on the very split it reports as validation, that
+  split is leaky and its score cannot be reproduced -- keep the patience and
+  `n_estimators`, carve the eval set from training rows, and say so in a
+  comment.
 * DO drop everything that is not part of producing a cross-validated score:
   test-set prediction, submission files, intermediate parquet/csv dumps,
   progress printing per fold, directory creation, chunked reads.

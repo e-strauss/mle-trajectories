@@ -506,6 +506,84 @@ p2 = X_vec.skb.apply(Model(), y=labels["label2"])
 pred = p1.skb.concat([p2], axis=1)
 ```
 
+### `fit_kwargs` — extra arguments for one `fit`, DataOps allowed
+
+`.skb.apply` takes `fit_kwargs`, `fit_transform_kwargs`, `transform_kwargs`,
+`predict_kwargs`, `predict_proba_kwargs`, `decision_function_kwargs` and
+`score_kwargs`. Each is a dict of extra named arguments for that method, and --
+this is the important part -- a value **may be, or contain, a DataOp**, which
+skrub evaluates before calling the method. That is what makes `sample_weight`,
+and early stopping's `eval_set`, expressible inside the plan.
+
+### Early stopping — carve the eval set inside the plan (verified)
+
+An original that fits with `eval_set=[(X_val, y_val)]` + `early_stopping_rounds`
+is NOT a lost cause, and it does NOT need a wrapper estimator. Split the fold's
+own training rows with a transformer that returns a **dict** of the four pieces,
+then pull them back out as ordinary DataOps and hand two of them to `fit_kwargs`:
+
+```python
+class GetXY(TransformerMixin, BaseEstimator):
+    """Carve an early-stopping eval set out of THIS fold's training rows."""
+
+    def __init__(self, test_size=0.2, random_state=42):
+        self.test_size = test_size
+        self.random_state = random_state
+
+    def fit(self, X, y):
+        return self
+
+    def fit_transform(self, X, y):
+        parts = train_test_split(X, y, test_size=self.test_size,
+                                 random_state=self.random_state)
+        return dict(zip(("X", "X_val", "y", "y_val"), parts))
+
+    def transform(self, X):
+        return {"X": X}          # predict mode: no y, no eval set needed
+
+
+X_y = X.skb.apply(GetXY(), y=y, how="no_wrap")
+X_fit = X_y["X"]
+y_fit = X_y.get("y", y)          # default is for predict/score mode
+X_val, y_val = X_y["X_val"], X_y["y_val"]
+
+pred = X_fit.skb.apply(
+    lgb.LGBMRegressor(n_estimators=2000, learning_rate=0.05, random_state=42),
+    y=y_fit,
+    fit_kwargs={"eval_set": [(X_val, y_val)],
+                "callbacks": [lgb.early_stopping(20, verbose=False)]},
+)
+```
+
+Four things make this work, and three of them are easy to get wrong:
+
+1. **`how="no_wrap"` is mandatory.** The default `how="auto"` routes the
+   estimator through `ApplyToSubFrame`, which enforces a pandas container out and
+   rejects the dict with `TypeError: GetXY.fit_transform returned a result of
+   type dict, but a pandas DataFrame was expected` (pitfall 22).
+2. **A transformer, not `apply_func`/`deferred`.** `transform` returning only
+   `{"X": X}` means skrub never tries to evaluate `y`, `X_val` or `y_val` in
+   predict mode, where they do not exist. A plain function would have to branch on
+   `skrub.eval_mode()` by hand.
+3. **`X_y.get("y", y)`** supplies the fallback for predict/score mode, where the
+   dict has no `"y"` key. Not needed if the scorer is declared with
+   `.skb.with_scoring`.
+4. **The eval rows come out of the fold's TRAINING rows only.** Verified by
+   instrumenting the split: 3000 rows, outer `ShuffleSplit(test_size=0.2)` →
+   `GetXY` sees 2400 → 1920 fit / 480 eval, and the 600 scored rows are never
+   touched. This is what makes it honest where the original was leaky.
+
+Early stopping measurably fires through this path: the same plan scored
+`-0.4954` with `fit_kwargs` and `-0.5403` without it.
+
+This will NOT reproduce the score of an original that early-stopped on the very
+rows it reports as validation -- nothing can, and that original's number is
+optimistic. It does keep the regularisation the original intended, which deleting
+`early_stopping_rounds` throws away (pitfall 19).
+
+Note LightGBM >= 4.6 deprecates `eval_set` in favour of `eval_X`/`eval_y`; keep
+whichever spelling the original used and expect a `LGBMDeprecationWarning`.
+
 ---
 
 ## 8. Target transforms — mark raw y, invert at predict time
@@ -848,6 +926,9 @@ pipeline plan (i.e. the file defines `pred`, `DESCRIPTION`, `PARENT`).
     Python: loops, `.copy()`, an **inner** `train_test_split` for early stopping
     (legitimate — it is per-fit, not the outer CV). skrub re-fits the wrapper per
     fold, so the logic stays leakage-free. Mixin first in the bases (pitfall 16).
+    For early stopping specifically, prefer the `GetXY` + `fit_kwargs` pattern in
+    section 7 -- it needs no wrapper at all -- and never just delete
+    `early_stopping_rounds`, which silently trains the full `n_estimators`.
 20. **A vectorised substitute for a column loop reproduces values, not column
     names or order — and order changes randomised models.** Replacing
     `for c in soil_cols: X[f"{c}_x_Elevation"] = X[c] * X["Elevation"]` with
@@ -860,6 +941,56 @@ pipeline plan (i.e. the file defines `pred`, `DESCRIPTION`, `PARENT`).
     `TransformerMixin, BaseEstimator` transformer's `transform` (pitfall 19) —
     there a Python loop over `X.columns` is fine, because it runs at fit time on
     a real dataframe rather than being recorded.
+
+21. **`groupby(<label>).apply(...)` silently drops the grouping column
+    (pandas >= 2.2, hard behaviour in pandas 3).** The frames handed to the
+    function no longer contain the key, so the concatenated result has no such
+    column and the next recorded step dies with a bare
+    `KeyError: '<name>'` -- at *scoring* time, not at build time, because the
+    plan graph is perfectly valid. This bites whenever a helper column is used
+    to emulate the original's chunked `pd.read_csv(..., chunksize=...)` loop:
+
+    ```python
+    # BROKEN under pandas 3 -- "_chunk" is gone from the result
+    sampled = df.groupby("_chunk", group_keys=False).apply(cap_rows)
+    kept = sampled[sampled["_chunk"].isin(included)]      # KeyError: '_chunk'
+
+    # WORKS -- the key comes back from the group index
+    sampled = (df.groupby("_chunk", group_keys=True)
+                 .apply(cap_rows).reset_index(level=0))
+    ```
+
+    `reset_index(level=0)` reinserts the key as the FIRST column; that is
+    harmless when the helper column is dropped again before `mark_as_X`, but
+    remember pitfall 20 if it survives into the feature matrix. Where the
+    per-group operation is order-based rather than random, prefer no UDF at all:
+    `df[df.groupby("_chunk").cumcount() < n]` caps each group with recorded ops
+    only.
+
+22. **A custom transformer must return a pandas container.** `transform` may do
+    whatever it likes internally, but handing back the bare ndarray earns
+    `TypeError: <T>.fit_transform returned a result of type ndarray, but a pandas
+    DataFrame was expected` -- again only once data flows, never at build time.
+    Reproducing the very common `X.values.astype(np.float32)` +
+    `np.nan_to_num(...)` preamble therefore ends with a wrap:
+
+    ```python
+    def transform(self, X):
+        values = np.nan_to_num(np.asarray(X, dtype=np.float32), nan=0.0)
+        return pd.DataFrame(values, columns=X.columns, index=X.index)
+    ```
+
+    Keeping `columns`/`index` is not cosmetic -- see pitfall 20 for why column
+    order moves the score.
+
+23. **`s.cols(...)` raises on a column that is not in the frame.** After
+    `X = data.drop(columns=["cost"]).skb.mark_as_X(...)`, a later
+    `X.skb.drop(s.cols("record_id", "start_time", "cost"))` -- the natural way to
+    transcribe an original's `feature_cols = [c for c in df if c not in
+    (id, time, target)]` -- dies with `The following columns are requested for
+    selection but missing from dataframe: ['cost']`, wrapped in scikit-learn's
+    "All the fits failed" once it happens per fold. List only columns that still
+    exist on X; the target is already gone by construction.
 
 ---
 

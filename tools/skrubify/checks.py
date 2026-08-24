@@ -324,6 +324,43 @@ def _udf_check(source: str) -> list[tuple[str, str]]:
     return out
 
 
+def _transformer_output_check(source: str) -> list[tuple[str, str]]:
+    """A custom transformer that hands back numpy instead of a pandas container.
+
+    skrub refuses it: ``TypeError: <T>.fit_transform returned a result of type
+    ndarray, but a pandas DataFrame was expected``. Like the split_kwargs trap
+    this only fires at SCORING time -- the plan builds happily, because nothing
+    has flowed through ``transform`` yet. Wrap the result:
+    ``pd.DataFrame(values, columns=X.columns, index=X.index)``, which also keeps
+    the column names and order the downstream model's feature subsampling
+    depends on (pitfall 20).
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    out: list[tuple[str, str]] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.ClassDef) and any(
+                isinstance(b, ast.Name) and b.id == "TransformerMixin"
+                for b in node.bases)):
+            continue
+        for item in node.body:
+            if not (isinstance(item, ast.FunctionDef) and item.name == "transform"):
+                continue
+            for ret in (n for n in ast.walk(item) if isinstance(n, ast.Return)):
+                v = ret.value
+                if (isinstance(v, ast.Call) and isinstance(v.func, ast.Attribute)
+                        and isinstance(v.func.value, ast.Name)
+                        and v.func.value.id in ("np", "numpy")):
+                    out.append((WARNING, f"line {ret.lineno}: {node.name}.transform "
+                                f"returns np.{v.func.attr}(...) -- skrub needs a pandas "
+                                "container out when a pandas container goes in. Wrap it: "
+                                "pd.DataFrame(values, columns=X.columns, index=X.index). "
+                                "This fails at scoring time, not at build time."))
+    return out
+
+
 def _arg_checks(source: str) -> list[tuple[str, str]]:
     """(level, message) pairs from checks over parsed call arguments."""
     out: list[tuple[str, str]] = []
@@ -363,6 +400,7 @@ def _arg_checks(source: str) -> list[tuple[str, str]]:
 
     out += _target_transform_check(source)
     out += _udf_check(source)
+    out += _transformer_output_check(source)
 
     for lineno, args in _calls(source, ".skb.concat"):
         if args.strip() and not args.lstrip().startswith("["):
@@ -412,8 +450,13 @@ def run_checks(source: str, *, strict: bool = False) -> CheckReport:
             else:
                 warnings.append(msg)
         if rule.kind == "forbid" and rule.scope != "all" and rule.level == ERROR:
-            # an error-level rule outside its scope: report, never force a repair
-            for msg in rule.check(_complement(source, region)):
+            # an error-level rule outside its scope: report, never force a repair.
+            # For plan-scoped rules the advisory also skips def/class bodies: in-place
+            # column assignment and .copy() inside a custom transformer are the
+            # patterns the contract ASKS for, so warning about them is pure noise.
+            outside = (_complement(regions["toplevel"], region) if rule.scope == "plan"
+                       else _complement(source, region))
+            for msg in rule.check(outside):
                 warnings.append(msg)
     for level, msg in _arg_checks(source):
         (errors if level == ERROR or strict else warnings).append(msg)

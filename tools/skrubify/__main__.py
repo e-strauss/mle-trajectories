@@ -105,11 +105,7 @@ def _headline_delta(score: float | None, score_s: float | None, n_new: int) -> N
     """
     if n_new != 1 or score is None or score_s is None:
         return
-    delta = score - score_s
-    verdict = ("identical" if delta == 0 else
-               "identical to float precision" if abs(delta) < 1e-12 else
-               "close" if abs(delta) < 1e-3 else "DIFFERENT")
-    print(f"  vs original final: {score_s!r}  delta {delta:+.6g}  ({verdict})")
+    print(f"  vs original final: {compare_scores([score], [score_s])}")
 
 
 def _run_and_compare(pipeline: Path, source: Path | None, args) -> int:
@@ -151,12 +147,26 @@ def _run_and_compare(pipeline: Path, source: Path | None, args) -> int:
         print("  no single score parsed from the original; its output was:")
         print("\n".join(f"    | {line}" for line in detail_s.splitlines()[-25:]))
         return 0
-    delta = score - score_s
-    verdict = ("identical" if score == score_s else
-               "close" if abs(delta) < 1e-3 else "DIFFERENT")
     print(f"  original score:   {score_s!r}")
-    print(f"  delta:            {delta:+.6g}  ({verdict})")
+    print(f"  comparison:       {compare_scores([score], [score_s])}")
     return 0
+
+
+def _find_source(pipeline: Path) -> Path | None:
+    """Locate the original a generated pipeline was translated from.
+
+    Generated files keep the source's basename, so look for that name in the
+    layouts we actually use: a sibling of the output folder (mle_star runs put
+    originals next to `skrubify_<provider>/`) or a `pipelines/` folder beside it
+    (mlevolve runs).
+    """
+    name, out_dir = pipeline.name, pipeline.parent
+    for cand in (out_dir.parent / name,
+                 out_dir.parent / "pipelines" / name,
+                 out_dir.parent.parent / name):
+        if cand.is_file() and cand.resolve() != pipeline.resolve():
+            return cand
+    return None
 
 
 def _check(paths: list[Path], args) -> int:
@@ -170,7 +180,10 @@ def _check(paths: list[Path], args) -> int:
         if text:
             print("\n".join(f"     {line}" for line in text.splitlines()))
         if v.ok and args.run_in:
-            rc |= _run_and_compare(path, None, args)
+            src = _find_source(path) if args.compare_source else None
+            if args.compare_source and src is None:
+                print(f"     ! no original found for {path.name}; running alone")
+            rc |= _run_and_compare(path, src, args)
         rc |= 0 if v.ok else 1
     return rc
 
