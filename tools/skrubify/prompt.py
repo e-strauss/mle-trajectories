@@ -40,6 +40,15 @@ Your job is a FAITHFUL TRANSLATION, not a redesign:
   `ShuffleSplit(n_splits=1, test_size=t, random_state=...)`.
 * Do NOT add feature engineering, tuning, `choose_from` choices, models or
   ensembling that the original does not have. Do not "improve" the pipeline.
+* **You cannot see the data, so never decide that a step is a no-op.** Logic
+  whose effect depends on the data's CONTENTS -- dropping or grouping classes
+  with fewer than `n_splits` rows, `if problematic_classes:` branches,
+  `value_counts()` thresholds, dtype-conditional handling -- must be translated
+  faithfully even when you believe the condition will not trigger. Claiming "all
+  classes have at least 3 rows, so this is a no-op" and omitting the filter
+  silently changes WHICH ROWS are scored, and the score with it. If such logic
+  cannot be expressed as recorded ops, use a custom `BaseCrossValidator`
+  (rows that must stay in training) or a wrapper estimator -- never deletion.
 * BUT if the original itself scores SEVERAL VARIANTS in one script (an ablation
   study, a model comparison, a feature-set sweep -- it prints more than one
   score), the faithful translation fuses them into ONE plan with

@@ -171,18 +171,43 @@ and the rare-class filter as
 `data[raw_target.groupby(raw_target).transform("size") >= 3]` — a recorded
 reformulation of `value_counts()` + `isin` + index-based `drop`.
 
-## Sweep over a whole mle_star run (22 scripts)
+## Sweep over a whole mle_star run (68 pipelines)
 
-`tab_playground_dec_21/mle_star-run4`, gpt-5.6-sol, each conversion validated,
-executed on a 100k-row sample and compared against the original:
+Every script in `tab_playground_dec_21/mle_star-run4` — 65 top-level plus 3 in
+`ensemble/` — converted with gpt-5.6-sol, validated, executed on a 100k-row
+sample and compared against the original. **68/68 pass `--check`** (plan builds,
+no rule errors; 2 carry an advisory warning for a splitter's internal fold loop).
+~$0.14 per script, $9.2 for the run.
 
 | group | scripts | result |
 |---|---|---|
-| single-pipeline (`train*`, `init_code_*`, `ensemble/*`) | 12 | score identical or within float noise (1e-16), except `train0_1` at -1.7e-9 (structural: fold-mean vs pooled OOF) |
+| single-pipeline (`train*`, `init_code_*`, `ensemble/*`) | 58 | score identical or within float noise, except `train0_1` at -1.7e-9 (structural: fold-mean vs pooled OOF) and the LightGBM pipelines (see the noise floor below) |
 | ablation studies (`ablation_0` … `ablation_9`) | 10 | fused into one `choose_from`; **every** variant score found among the original's printed scores within its printing precision |
 
-All 22 pass `--check` (plan builds, no rule errors). 15 converted in one shot, 7
-needed a single repair round, none needed two, none failed. ~$0.13 per script.
+### Reading a score comparison honestly
+
+Four scripts were flagged by the comparison. Exactly ONE was a conversion bug:
+
+- **`train9_improve0` — real defect.** The conversion declared the original's
+  rare-class grouping and exclusion "data-dependent no-ops" because it judged
+  that every class had at least `n_splits` rows. `Cover_Type` 5 has exactly one
+  row, so the original scored 100000 rows and the conversion 100001 — a +1.5e-4
+  drift from a wrong assumption about data the tool never sees. The contract now
+  forbids deciding that content-dependent logic is a no-op; after that, the
+  conversion reproduces the original exactly (0.9503099962900992).
+- **`train3_improve{1,2,3}` — not defects.** LightGBM with `n_jobs=-1` is not
+  reproducible run to run: on these pipelines the ORIGINAL alone spans 2e-4
+  (`_improve3`), 9e-4 (`_improve2`) and 4e-3 (`_improve1`) across repeated runs,
+  and every skrubified score falls inside its own original's range. Below roughly
+  1e-3, a LightGBM comparison says nothing — measure the original's spread before
+  believing a delta. RandomForest, by contrast, was bit-reproducible everywhere.
+
+Two harness notes for anyone re-running this at scale: run the conversions in
+parallel but let each pipeline run get the machine (4 concurrent workers each
+fitting with `n_jobs=-1` oversubscribed 24 cores badly enough to turn a 12s run
+into a >1100s timeout — both "timeouts" in the sweep were this, not slow
+pipelines); and remember `--run-in` executes the ORIGINAL too, so a script that
+writes files needs a per-worker working directory.
 
 Custom splitters the conversions invented where the plan needed one:
 `SingletonClassTrainingSplitter` (a class with one sample kept in train only),
