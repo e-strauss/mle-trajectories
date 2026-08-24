@@ -1,59 +1,49 @@
+import numpy as np
 import pandas as pd
 import skrub
 from lightgbm import LGBMClassifier
 from sklearn.model_selection import StratifiedKFold
 
 
-def exclude_rare_target_classes(df, target, n_splits):
-    """Remove classes that cannot be used by the original StratifiedKFold."""
-    class_counts = df[target].value_counts()
-    problematic_classes = class_counts[class_counts < n_splits].index
-    return df.loc[~df[target].isin(problematic_classes)].reset_index(drop=True)
-
-
-def restore_original_target_labels(predictions, mode):
-    """Map predicted labels from 0-6 back to the raw target domain, 1-7."""
-    if mode == "fit":
-        return predictions
-    return predictions + 1
-
-
 with skrub.config_context(eager_data_ops=False):
-    # 1. Load Data — record the CSV read. The original try/except and progress
-    #    messages are omitted so importing this module neither reads data nor
-    #    performs runtime reporting.
+    # 1. Load Data — record the CSV read. The original try/except only added an
+    #    error message; the recorded read will still raise FileNotFoundError.
     data = skrub.as_data_op("./input/train.csv").skb.apply_func(pd.read_csv)
 
-    # The original excluded target classes having fewer than three samples before
-    # running CV. Because this changes the number of rows, it must happen before
-    # marking X and y. Counting raw labels is equivalent to counting labels shifted
-    # from 1-7 to 0-6.
-    data = data.skb.apply_func(
-        exclude_rare_target_classes,
-        target="Cover_Type",
-        n_splits=3,
-    )
+    # 2. Prepare Data — faithfully remove classes having fewer than three rows
+    #    before marking X and y, since this changes which rows are scored.
+    #    Applying the filter unconditionally also reproduces the original
+    #    `if problematic_classes` branch when that set is empty.
+    target_for_filter = data["Cover_Type"] - 1
+    class_counts = target_for_filter.value_counts()
+    problematic_classes = class_counts[class_counts < 3].index
+    filtered_data = data[
+        ~target_for_filter.isin(problematic_classes)
+    ].reset_index(drop=True)
 
-    # 2. Prepare Data — mark the RAW target, then perform the original 1-to-0
-    #    label shift downstream of mark_as_y. The manual StratifiedKFold loop is
-    #    represented by the identical splitter on mark_as_X.
-    y_raw = data["Cover_Type"].skb.mark_as_y()
+    # Mark the raw 1-7 target, then perform the original 0-6 transformation
+    # downstream of the mark.
+    y_raw = filtered_data["Cover_Type"].skb.mark_as_y()
     y_transformed = y_raw - 1
 
-    X = data.drop(columns=["Id", "Cover_Type"]).skb.mark_as_X(
+    # Retain the Hillshade columns at the mark so their feature engineering is
+    # fitted and evaluated inside each fold. The manual three-fold loop becomes
+    # this identical StratifiedKFold splitter.
+    X = filtered_data.drop(columns=["Id", "Cover_Type"]).skb.mark_as_X(
         cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42),
         split_kwargs={},
     )
 
-    # 3. Recorded feature engineering and model. The composite is appended before
-    #    the three source columns are dropped, preserving the original feature
-    #    values, names, and column order.
+    # 3. Recorded feature engineering and model — create the composite at the
+    #    end of the table, then drop the three source columns exactly as before.
+    hillshade_composite = (
+        X["Hillshade_9am"] + X["Hillshade_Noon"] + X["Hillshade_3pm"]
+    ) / 3
     features = X.assign(
-        Hillshade_composite=(
-            X["Hillshade_9am"] + X["Hillshade_Noon"] + X["Hillshade_3pm"]
-        )
-        / 3
-    ).drop(columns=["Hillshade_9am", "Hillshade_Noon", "Hillshade_3pm"])
+        Hillshade_composite=hillshade_composite
+    ).drop(
+        columns=["Hillshade_9am", "Hillshade_Noon", "Hillshade_3pm"]
+    )
 
     model = LGBMClassifier(
         n_estimators=100,
@@ -65,18 +55,19 @@ with skrub.config_context(eager_data_ops=False):
     )
     pred_transformed = features.skb.apply(model, y=y_transformed)
 
-    # The model predicts labels in the transformed 0-6 domain, while scoring uses
-    # the raw target marked above. Restore predictions to 1-7 outside fit mode;
-    # during fit, a prediction node contains the fitted estimator and must pass
-    # through unchanged.
+    # Accuracy was originally computed in the transformed 0-6 label domain.
+    # Restore predictions to the raw 1-7 domain because the raw target is marked
+    # for scoring. This leaves the accuracy numerically unchanged.
+    def restore_original_labels(predictions, mode):
+        if mode == "fit":
+            return predictions
+        return predictions + 1
+
     pred = pred_transformed.skb.apply_func(
-        restore_original_target_labels,
-        skrub.eval_mode(),
+        restore_original_labels, skrub.eval_mode()
     )
 
-    # 4. Score — no cv= here; the splitter declared on mark_as_X drives the
-    #    three-fold validation. Accuracy is unchanged by shifting both label
-    #    domains consistently.
+    # 4. Score — no cv= here; the splitter attached to mark_as_X drives CV.
     if __name__ == "__main__":
         search = pred.skb.make_grid_search(
             n_jobs=1,

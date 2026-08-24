@@ -5,62 +5,42 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import StratifiedKFold
 
 
-def exclude_rare_classes(df, n_splits=3):
-    """Remove classes that cannot participate in the original stratified CV."""
-    transformed_target = df["Cover_Type"] - 1
-    class_counts = transformed_target.value_counts()
-    problematic_classes = class_counts[class_counts < n_splits].index
-
-    if len(problematic_classes) == 0:
-        return df
-
-    keep_rows = ~transformed_target.isin(problematic_classes)
-    return df.loc[keep_rows].reset_index(drop=True)
-
-
-def restore_original_target_labels(predictions, mode):
-    """Map predicted labels from 0-6 back to the raw target domain, 1-7."""
-    if mode == "fit":
-        # In fit mode the prediction node contains the fitted estimator.
-        return predictions
-    return predictions + 1
-
-
 with skrub.config_context(eager_data_ops=False):
-    # 1. Load Data — record the CSV read. The original's FileNotFoundError
-    #    printing is omitted because it does not contribute to the CV score.
+    # 1. Load Data — record the CSV read. The original try/except is omitted because
+    #    importing this module must not read data; a missing file is reported when
+    #    the plan is scored.
     data = skrub.as_data_op("./input/train.csv").skb.apply_func(pd.read_csv)
 
-    # 2. Prepare Data — preserve the original data-dependent removal of classes
-    #    having fewer than three samples. Row filtering must happen before the
-    #    marks because it changes the number of rows.
-    cv_data = data.skb.apply_func(exclude_rare_classes, n_splits=3)
+    # 2. Prepare data. Faithfully remove classes containing fewer than three
+    #    samples before marking X and y. This vectorized recorded filter reproduces
+    #    both branches of the original data-dependent `if problematic_classes`.
+    transformed_target = data["Cover_Type"] - 1
+    class_counts = transformed_target.value_counts()
+    problematic_classes = class_counts[class_counts < 3].index
+    filtered_data = data[
+        ~transformed_target.isin(problematic_classes)
+    ].reset_index(drop=True)
 
-    # Mark the RAW target first, then perform the original 1-7 to 0-6 transform
-    # downstream of the mark for model fitting.
-    y_raw = cv_data["Cover_Type"].skb.mark_as_y()
-    y_transformed = y_raw - 1
-
-    # Mark the unengineered design matrix. The original manual three-fold loop
-    # is represented by the same StratifiedKFold splitter here.
-    X = cv_data.drop(columns=["Id", "Cover_Type"]).skb.mark_as_X(
+    # Mark the RAW target, then perform the original 1-7 to 0-6 transformation
+    # downstream. The StratifiedKFold splitter replaces the manual outer loop.
+    y_raw = filtered_data["Cover_Type"].skb.mark_as_y()
+    y = y_raw - 1
+    X = filtered_data.drop(columns=["Id", "Cover_Type"]).skb.mark_as_X(
         cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42),
         split_kwargs={},
     )
 
-    # 3. Recorded feature engineering — preserve the original feature values,
-    #    names, and append order before dropping the source columns.
+    # 3. Recorded feature engineering and model. The engineered columns are
+    #    appended in the same order as in the original before the source columns
+    #    are dropped, preserving the feature order seen by the random forest.
     aspect_radians = X["Aspect"].skb.apply_func(np.radians)
-    aspect_sin = aspect_radians.skb.apply_func(np.sin)
-    aspect_cos = aspect_radians.skb.apply_func(np.cos)
-    hillshade_composite = (
-        X["Hillshade_9am"] + X["Hillshade_Noon"] + X["Hillshade_3pm"]
-    ) / 3
-
     features = X.assign(
-        Aspect_sin=aspect_sin,
-        Aspect_cos=aspect_cos,
-        Hillshade_composite=hillshade_composite,
+        Aspect_sin=aspect_radians.skb.apply_func(np.sin),
+        Aspect_cos=aspect_radians.skb.apply_func(np.cos),
+        Hillshade_composite=(
+            X["Hillshade_9am"] + X["Hillshade_Noon"] + X["Hillshade_3pm"]
+        )
+        / 3,
     ).drop(
         columns=[
             "Aspect",
@@ -75,17 +55,24 @@ with skrub.config_context(eager_data_ops=False):
         random_state=42,
         n_jobs=-1,
     )
-    pred_transformed = features.skb.apply(model, y=y_transformed)
+    pred_transformed = features.skb.apply(model, y=y)
 
-    # The model predicts transformed labels (0-6), while scoring is against the
-    # raw mark_as_y target (1-7). Restore the original domain at prediction time.
-    # The eval-mode guard leaves the fitted estimator untouched in fit mode.
+    # Predictions are shifted back to the raw 1-7 target domain for scoring.
+    # Accuracy is unchanged from scoring both y and predictions in the 0-6 domain.
+    # The operation is gated because the prediction node contains the fitted
+    # estimator rather than predictions while skrub is in fit mode.
+    def restore_raw_labels(values, mode):
+        if mode == "fit":
+            return values
+        return values + 1
+
     pred = pred_transformed.skb.apply_func(
-        restore_original_target_labels,
+        restore_raw_labels,
         skrub.eval_mode(),
     )
 
-    # 4. Score — no cv= here; the splitter attached to mark_as_X drives CV.
+    # 4. Score. No cv= here—the splitter attached to mark_as_X drives the
+    #    three-fold validation and mean_test_score is the original mean accuracy.
     if __name__ == "__main__":
         search = pred.skb.make_grid_search(
             n_jobs=1,

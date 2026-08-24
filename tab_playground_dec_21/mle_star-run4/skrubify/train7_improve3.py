@@ -1,58 +1,45 @@
 import numpy as np
 import pandas as pd
 import skrub
-from skrub import selectors as s
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import StratifiedKFold
 
 
-def exclude_rare_target_classes(df, target, min_count):
-    """Reproduce the original pre-CV removal of classes with too few rows."""
-    class_counts = df[target].value_counts()
-    problematic_classes = class_counts[class_counts < min_count].index
-
-    if len(problematic_classes) == 0:
-        return df
-
-    return df.loc[~df[target].isin(problematic_classes)].reset_index(drop=True)
-
-
-def restore_original_target_labels(predictions, mode):
-    """Map predictions from 0-6 back to the raw 1-7 target domain."""
+def restore_original_labels(predictions, mode):
+    """Shift model predictions from 0-6 back to the raw 1-7 label domain."""
     if mode == "fit":
-        # In fit mode, a prediction node contains the fitted estimator.
-        return None
-    return np.asarray(predictions) + 1
+        # In fit mode, the prediction node contains the fitted estimator.
+        return predictions
+    return predictions + 1
 
 
 with skrub.config_context(eager_data_ops=False):
-    # 1. Load Data — the read is recorded and therefore does not occur on import.
-    #    The original try/except and progress messages are omitted because they do
-    #    not contribute to the cross-validated score.
+    # 1. Load Data — record the CSV read. The original error message and progress
+    #    printing are omitted because they do not contribute to the CV score.
     data = skrub.as_data_op("./input/train.csv").skb.apply_func(pd.read_csv)
 
-    # 2. Prepare rows before marking X and y. The original excluded every sample
-    #    whose class had fewer than three observations before cross-validation.
-    #    Row filtering must occur before the marks because it changes row count.
-    data_cv = data.skb.apply_func(
-        exclude_rare_target_classes,
-        target="Cover_Type",
-        min_count=3,
-    )
+    # 2. Prepare data. Faithfully remove classes with fewer than three rows before
+    #    marking X and y, since the original excluded those rows from scoring.
+    #    Computing this from raw Cover_Type is equivalent to computing it after
+    #    subtracting one because the shift does not change class frequencies.
+    raw_target = data["Cover_Type"]
+    class_counts = raw_target.value_counts()
+    problematic_classes = class_counts[class_counts < 3].index
+    filtered_data = data[
+        ~raw_target.isin(problematic_classes)
+    ].reset_index(drop=True)
 
-    # 3. Mark the RAW target and the initial design matrix. The original trained
-    #    on labels shifted from 1-7 to 0-6; that transform is applied only after
-    #    mark_as_y, and predictions are restored to 1-7 before scoring.
-    y = data_cv["Cover_Type"].skb.mark_as_y()
-    y_transformed = y - 1
-
-    X = data_cv.drop(columns=["Cover_Type"]).skb.mark_as_X(
+    # Mark the RAW target. The original's 0-6 target transformation is applied
+    # only after marking, and predictions are shifted back before scoring.
+    y = filtered_data["Cover_Type"].skb.mark_as_y()
+    X = filtered_data.drop(["Id", "Cover_Type"], axis=1).skb.mark_as_X(
         cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42),
         split_kwargs={},
     )
+    y_transformed = y - 1
 
-    # 4. Recorded feature engineering, preserving the original operation and
-    #    column-append order.
+    # 3. Recorded preprocessing and feature engineering, preserving the original
+    #    feature values, names, and creation order.
     features = X.assign(
         Hillshade_composite=(
             X["Hillshade_9am"] + X["Hillshade_Noon"] + X["Hillshade_3pm"]
@@ -66,37 +53,28 @@ with skrub.config_context(eager_data_ops=False):
         )
     )
 
-    clipped_road_distance = features[
-        "Horizontal_Distance_To_Roadways"
-    ].clip(lower=0)
-    logged_road_distance = clipped_road_distance.skb.apply_func(np.log1p)
-    features = features.assign(
-        Horizontal_Distance_To_Roadways=logged_road_distance
+    transformed_road_distance = (
+        features["Horizontal_Distance_To_Roadways"]
+        .clip(0, None)
+        .skb.apply_func(np.log1p)
     )
-
+    features = features.assign(
+        Horizontal_Distance_To_Roadways=transformed_road_distance
+    )
     features = features.assign(
         Hydro_Road_Interaction=(
             features["Horizontal_Distance_To_Hydrology"]
             * features["Horizontal_Distance_To_Roadways"]
-        )
-    )
-    features = features.assign(
+        ),
         Elevation_x_Fire_Points=(
             features["Elevation"]
             * features["Horizontal_Distance_To_Fire_Points"]
-        )
+        ),
+    )
+    features = features.drop(
+        columns=["Hillshade_9am", "Hillshade_Noon", "Hillshade_3pm"]
     )
 
-    features = features.skb.drop(
-        s.cols(
-            "Id",
-            "Hillshade_9am",
-            "Hillshade_Noon",
-            "Hillshade_3pm",
-        )
-    )
-
-    # 5. Model — same family and hyperparameters as the original.
     model = RandomForestClassifier(
         n_estimators=100,
         random_state=42,
@@ -104,13 +82,14 @@ with skrub.config_context(eager_data_ops=False):
     )
     pred_transformed = features.skb.apply(model, y=y_transformed)
 
-    # Restore predictions to the raw target domain required by mark_as_y.
+    # The original model predicts 0-6 labels and scores those against the shifted
+    # target. Shift predictions back by one so scoring against the marked raw
+    # 1-7 target remains exactly equivalent.
     pred = pred_transformed.skb.apply_func(
-        restore_original_target_labels,
-        skrub.eval_mode(),
+        restore_original_labels, skrub.eval_mode()
     )
 
-    # 6. Score. No cv= is passed here; mark_as_X's StratifiedKFold drives.
+    # 4. Score. No cv= here—the splitter attached to mark_as_X drives validation.
     if __name__ == "__main__":
         search = pred.skb.make_grid_search(
             n_jobs=1,

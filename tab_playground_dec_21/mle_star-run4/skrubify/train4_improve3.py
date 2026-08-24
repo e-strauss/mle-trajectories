@@ -5,57 +5,59 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import StratifiedKFold
 
 
-def exclude_underrepresented_classes(df, target_column, min_count):
-    """Remove rows whose target class cannot support stratified CV."""
-    class_counts = df[target_column].value_counts()
-    valid_classes = class_counts[class_counts >= min_count].index
-    return df[df[target_column].isin(valid_classes)].reset_index(drop=True)
-
-
-def restore_original_target_labels(predictions, mode):
-    """Map predictions from 0-6 back to the raw target domain of 1-7."""
+def restore_original_labels(predictions, mode):
+    """Invert the target's 1-to-0 label shift only when producing predictions."""
     if mode == "fit":
         return predictions
     return predictions + 1
 
 
 with skrub.config_context(eager_data_ops=False):
-    # 1. Load Data — record the CSV read. The original try/except and progress
-    #    messages are omitted because they do not contribute to the CV score.
+    # 1. Load Data — the read is recorded, so importing this module does not access
+    #    the file. The original FileNotFoundError printing is omitted because it is
+    #    not part of producing the cross-validated score.
     data = skrub.as_data_op("./input/train.csv").skb.apply_func(pd.read_csv)
 
-    # 2. Prepare data. The original excluded classes having fewer than three
-    #    samples before cross-validation. Row filtering must happen before the
-    #    marks because it changes the number of rows.
-    data = data.skb.apply_func(
-        exclude_underrepresented_classes,
-        target_column="Cover_Type",
-        min_count=3,
-    )
+    # 2. Prepare Data — faithfully remove target classes having fewer than three
+    #    rows before marking X and y. This data-dependent filtering cannot be
+    #    omitted, even when the problematic-class list happens to be empty.
+    raw_target = data["Cover_Type"]
+    shifted_target_for_filtering = raw_target - 1
+    class_counts = shifted_target_for_filtering.value_counts()
+    problematic_classes = class_counts[class_counts < 3].index
+    keep_rows = ~shifted_target_for_filtering.isin(problematic_classes)
+    filtered_data = data[keep_rows].reset_index(drop=True)
 
-    # Mark the RAW 1-7 target. The model's 0-6 target transformation happens
-    # after mark_as_y, and predictions are mapped back to 1-7 before scoring.
-    y = data["Cover_Type"].skb.mark_as_y()
-    X = data.drop(columns=["Id", "Cover_Type"]).skb.mark_as_X(
+    # Mark the RAW target. The 1-7 to 0-6 transformation used for fitting is
+    # applied only after mark_as_y and is inverted on predictions below.
+    y = filtered_data["Cover_Type"].skb.mark_as_y()
+    y_transformed = y - 1
+
+    # The manual three-fold loop becomes the identical StratifiedKFold splitter
+    # attached to mark_as_X. Stratifying raw labels is equivalent to stratifying
+    # their one-to-one shifted labels.
+    X = filtered_data.drop(columns=["Id", "Cover_Type"]).skb.mark_as_X(
         cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42),
         split_kwargs={},
     )
-    y_transformed = y - 1
 
-    # 3. Recorded feature engineering, preserving the original feature values,
-    #    names, and appended-column order.
-    hillshade_composite = (
-        X["Hillshade_9am"] + X["Hillshade_Noon"] + X["Hillshade_3pm"]
-    ) / 3
-    features = X.assign(Hillshade_composite=hillshade_composite)
-
-    aspect_rad = features["Aspect"].skb.apply_func(np.deg2rad)
-    features = features.assign(Aspect_rad=aspect_rad)
-    features = features.assign(
-        Aspect_sin=features["Aspect_rad"].skb.apply_func(np.sin),
-        Aspect_cos=features["Aspect_rad"].skb.apply_func(np.cos),
+    # 3. Recorded feature engineering — preserve the original creation order:
+    #    Hillshade_composite, temporary Aspect_rad, Aspect_sin, then Aspect_cos.
+    X_features = X.assign(
+        Hillshade_composite=(
+            X["Hillshade_9am"] + X["Hillshade_Noon"] + X["Hillshade_3pm"]
+        )
+        / 3
     )
-    features = features.drop(
+    aspect_rad = X_features["Aspect"].skb.apply_func(np.deg2rad)
+    X_features = X_features.assign(Aspect_rad=aspect_rad)
+    X_features = X_features.assign(
+        Aspect_sin=X_features["Aspect_rad"].skb.apply_func(np.sin)
+    )
+    X_features = X_features.assign(
+        Aspect_cos=X_features["Aspect_rad"].skb.apply_func(np.cos)
+    )
+    X_features = X_features.drop(
         columns=[
             "Hillshade_9am",
             "Hillshade_Noon",
@@ -65,23 +67,23 @@ with skrub.config_context(eager_data_ops=False):
         ]
     )
 
+    # Same model family and every hyperparameter from the original script.
     model = RandomForestClassifier(
         n_estimators=100,
         random_state=42,
         n_jobs=-1,
     )
-    pred_transformed = features.skb.apply(model, y=y_transformed)
+    pred_shifted = X_features.skb.apply(model, y=y_transformed)
 
-    # Accuracy is unchanged by this one-to-one label shift, but predictions must
-    # be restored to the raw marked target's 1-7 domain. In fit mode the input is
-    # the fitted estimator, so it is returned unchanged.
-    pred = pred_transformed.skb.apply_func(
-        restore_original_target_labels,
+    # Restore predictions from 0-6 to the raw target's 1-7 domain. This preserves
+    # the original transformed-label accuracy while satisfying raw-target scoring.
+    # The operation is gated because prediction nodes hold an estimator in fit mode.
+    pred = pred_shifted.skb.apply_func(
+        restore_original_labels,
         skrub.eval_mode(),
     )
 
-    # 4. Score. The splitter on mark_as_X reproduces the original manual
-    #    three-fold StratifiedKFold loop; no cv= is passed here.
+    # 4. Score — no cv= here; the splitter attached to mark_as_X drives.
     if __name__ == "__main__":
         search = pred.skb.make_grid_search(
             n_jobs=1,

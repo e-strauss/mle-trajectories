@@ -5,73 +5,51 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import StratifiedKFold
 
 
-def drop_rare_target_classes(df, target, min_count):
-    """Reproduce the original pre-CV removal of classes too small to stratify."""
-    class_counts = df[target].value_counts()
-    rare_classes = class_counts[class_counts < min_count].index
-    if len(rare_classes) == 0:
-        return df
-    return df.loc[~df[target].isin(rare_classes)].reset_index(drop=True)
-
-
-def restore_original_target_labels(predictions, mode):
-    """Map model predictions from 0-6 back to the raw 1-7 scoring domain."""
-    if mode == "fit":
-        return predictions
-    return np.asarray(predictions) + 1
-
-
 with skrub.config_context(eager_data_ops=False):
-    # 1. Load Data — record the CSV read. The original's explicit FileNotFoundError
-    #    message is omitted; pd.read_csv will naturally raise if the file is absent.
-    train_df = skrub.as_data_op("./input/train.csv").skb.apply_func(pd.read_csv)
+    # 1. Load Data — record the CSV read. The original try/except is omitted;
+    #    because loading is lazy, a missing file is reported when the plan is scored.
+    data = skrub.as_data_op("./input/train.csv").skb.apply_func(pd.read_csv)
 
-    # 2. Prepare Data — reproduce the original removal of target classes having
-    #    fewer than three rows. Row filtering must occur before the marks because
-    #    it changes the number of samples.
-    train_df = train_df.skb.apply_func(
-        drop_rare_target_classes,
-        target="Cover_Type",
-        min_count=3,
-    )
+    # 2. Prepare Data — faithfully remove target classes having fewer than three
+    #    rows before marking X and y. This content-dependent filtering cannot be
+    #    omitted; expressing it as recorded operations preserves the original
+    #    cross-validation population.
+    raw_target = data["Cover_Type"]
+    class_counts = raw_target.value_counts()
+    problematic_classes = class_counts[class_counts < 3].index
+    filtered_data = data[
+        ~raw_target.isin(problematic_classes)
+    ].reset_index(drop=True)
 
-    # Mark the RAW 1-7 target. The 0-6 transformation used for fitting is recorded
-    # only after mark_as_y; predictions are shifted back to 1-7 before scoring.
-    y_raw = train_df["Cover_Type"].skb.mark_as_y()
-    y_transformed = y_raw - 1
+    # Mark the RAW target, then apply the original 1-7 to 0-6 transformation
+    # downstream. Predictions are mapped back to the raw domain below so scoring
+    # remains aligned with this mark_as_y node.
+    y = filtered_data["Cover_Type"].skb.mark_as_y()
+    y_transformed = y - 1
 
-    # Hillshade columns remain in the raw marked matrix because they are needed to
-    # construct Hillshade_composite. They are dropped before the model, exactly as
-    # in the original feature matrix. The manual three-fold loop becomes this
-    # splitter on mark_as_X.
-    X = train_df.drop(columns=["Id", "Cover_Type"]).skb.mark_as_X(
+    # Keep the Hillshade inputs until their composite has been computed downstream.
+    # The original manual StratifiedKFold loop is represented by this splitter.
+    X = filtered_data.drop(columns=["Id", "Cover_Type"]).skb.mark_as_X(
         cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42),
         split_kwargs={},
     )
 
-    # 3. Recorded feature engineering — preserve the original feature values,
-    #    names, creation order, and removal of the three source Hillshade columns.
+    # 3. Recorded feature engineering, preserving the original feature values,
+    #    names, and appended-column order.
     hillshade_composite = (
         X["Hillshade_9am"] + X["Hillshade_Noon"] + X["Hillshade_3pm"]
     ) / 3
 
-    hydrology_distance_squared = (
+    euclidean_hydrology = (
         X["Horizontal_Distance_To_Hydrology"] ** 2
         + X["Vertical_Distance_To_Hydrology"] ** 2
-    )
-    euclidean_distance = hydrology_distance_squared.skb.apply_func(np.sqrt)
+    ).skb.apply_func(np.sqrt)
 
-    features = X.assign(Hillshade_composite=hillshade_composite)
-    features = features.assign(
-        Euclidean_Distance_To_Hydrology=euclidean_distance
-    )
-    features = features.assign(
-        Elevation_Hydrology_Interaction=(
-            features["Elevation"]
-            * features["Euclidean_Distance_To_Hydrology"]
-        )
-    )
-    features = features.drop(
+    features = X.assign(
+        Hillshade_composite=hillshade_composite,
+        Euclidean_Distance_To_Hydrology=euclidean_hydrology,
+        Elevation_Hydrology_Interaction=X["Elevation"] * euclidean_hydrology,
+    ).drop(
         columns=["Hillshade_9am", "Hillshade_Noon", "Hillshade_3pm"]
     )
 
@@ -82,14 +60,22 @@ with skrub.config_context(eager_data_ops=False):
     )
     pred_transformed = features.skb.apply(model, y=y_transformed)
 
-    # Restore the model's 0-6 predictions to the raw target's 1-7 domain. This is
-    # gated because a prediction node evaluates to the fitted estimator in fit mode.
+    # Convert predicted labels from 0-6 back to the raw 1-7 target domain.
+    # In fit mode a prediction node contains the fitted estimator rather than
+    # predictions, so it must pass through unchanged.
+    def inverse_target_transform(prediction, mode):
+        if mode == "fit":
+            return prediction
+        return prediction + 1
+
     pred = pred_transformed.skb.apply_func(
-        restore_original_target_labels,
+        inverse_target_transform,
         skrub.eval_mode(),
     )
 
-    # 4. Score — no cv= here; mark_as_X's StratifiedKFold drives validation.
+    # 4. Score — no cv= here; the splitter attached to mark_as_X drives the
+    #    three-fold validation. Progress and rare-class warning prints from the
+    #    manual loop are omitted because they do not produce the CV score.
     if __name__ == "__main__":
         search = pred.skb.make_grid_search(
             n_jobs=1,

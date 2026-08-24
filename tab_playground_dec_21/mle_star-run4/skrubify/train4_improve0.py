@@ -5,49 +5,45 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import StratifiedKFold
 
 
-def exclude_rare_target_classes(df, target_column, min_count):
-    """Reproduce the original pre-CV removal of classes with too few rows."""
-    class_counts = df[target_column].value_counts()
-    valid_classes = class_counts[class_counts >= min_count].index
-    return df[df[target_column].isin(valid_classes)].reset_index(drop=True)
-
-
-def restore_original_target_labels(predictions, mode):
-    """Map model predictions from 0-6 back to the raw 1-7 target domain."""
+def restore_original_target(predictions, mode):
+    """Map predictions from 0-6 back to the raw 1-7 target domain."""
     if mode == "fit":
-        # In fit mode this value is the fitted estimator, not predictions.
         return predictions
     return predictions + 1
 
 
 with skrub.config_context(eager_data_ops=False):
-    # 1. Load Data — record the CSV read. The original's custom FileNotFoundError
-    #    message is omitted; the recorded pd.read_csv naturally raises if absent.
+    # 1. Load Data — record the CSV read. The original's FileNotFoundError
+    #    message wrapper is omitted; a missing file still raises naturally when
+    #    the lazily recorded plan is scored.
     data = skrub.as_data_op("./input/train.csv").skb.apply_func(pd.read_csv)
 
-    # 2. Prepare Data — the original excludes every class represented by fewer
-    #    than three samples before cross-validation. This row filtering must happen
-    #    before the marks because it changes the number of rows.
-    data = data.skb.apply_func(
-        exclude_rare_target_classes,
-        target_column="Cover_Type",
-        min_count=3,
-    )
+    # 2. Prepare data. Faithfully remove classes having fewer than three rows
+    #    before marking X and y, because this changes which rows are scored.
+    #    Counting raw Cover_Type values selects exactly the same rows as counting
+    #    Cover_Type - 1 because subtracting one is a one-to-one relabeling.
+    raw_target = data["Cover_Type"]
+    class_counts = raw_target.value_counts()
+    problematic_classes = class_counts[class_counts < 3].index
+    filtered_data = data[
+        ~raw_target.isin(problematic_classes)
+    ].reset_index(drop=True)
 
-    # Mark the RAW 1-7 target, then perform the original 0-indexing downstream.
-    # Predictions are mapped back to 1-7 below so scoring remains in the raw domain.
-    y_raw = data["Cover_Type"].skb.mark_as_y()
-    y_transformed = y_raw - 1
+    # Mark the RAW target, then perform the original 1-7 to 0-6 transformation
+    # downstream. Predictions are mapped back to 1-7 before scoring below.
+    y = filtered_data["Cover_Type"].skb.mark_as_y()
+    y_transformed = y - 1
 
-    # Mark the unengineered design matrix. The original manual three-fold loop is
-    # represented by the identical StratifiedKFold splitter here.
-    X = data.drop(columns=["Id", "Cover_Type"]).skb.mark_as_X(
+    # Keep the feature-engineering source columns until after mark_as_X so all
+    # preprocessing is recorded and rerun within each fold.
+    X = filtered_data.drop(columns=["Id", "Cover_Type"]).skb.mark_as_X(
         cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42),
         split_kwargs={},
     )
 
-    # 3. Recorded feature engineering — preserve the original feature values and
-    #    final column order while replacing in-place assignments with assign.
+    # 3. Recorded feature engineering. The new columns are appended in the same
+    #    order as in the original script, after which the original source
+    #    Hillshade and Aspect columns are removed.
     aspect_radians = X["Aspect"].skb.apply_func(np.deg2rad)
     features = X.assign(
         Hillshade_composite=(
@@ -72,15 +68,16 @@ with skrub.config_context(eager_data_ops=False):
     )
     pred_transformed = features.skb.apply(model, y=y_transformed)
 
-    # Restore predictions to the raw target domain. This is gated on eval mode
-    # because a prediction node evaluates to the fitted estimator in "fit" mode.
+    # Restore the original 1-7 target domain for scoring against the raw marked
+    # target. In fit mode, the prediction node contains the fitted estimator, so
+    # it must pass through unchanged.
     pred = pred_transformed.skb.apply_func(
-        restore_original_target_labels,
+        restore_original_target,
         skrub.eval_mode(),
     )
 
-    # 4. Score — no cv= here; the splitter attached to mark_as_X drives the
-    #    cross-validation. Mean test accuracy matches the original mean of folds.
+    # 4. Score. No cv= here—the StratifiedKFold attached to mark_as_X drives
+    #    validation, and mean_test_score is the original mean fold accuracy.
     if __name__ == "__main__":
         search = pred.skb.make_grid_search(
             n_jobs=1,

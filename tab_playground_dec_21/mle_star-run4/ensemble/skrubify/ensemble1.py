@@ -6,15 +6,8 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import BaseCrossValidator, StratifiedKFold
 
 
-def drop_rare_target_classes(df, target="Cover_Type", n_splits=3):
-    """Reproduce the original removal of classes with fewer than three rows."""
-    class_counts = df[target].value_counts()
-    problematic_classes = class_counts[class_counts < n_splits].index
-    return df.loc[~df[target].isin(problematic_classes)].reset_index(drop=True)
-
-
-class ThreeSeedStratifiedKFold(BaseCrossValidator):
-    """Yield the original three folds for random states 42, 43, and 44."""
+class RepeatedSeedStratifiedKFold(BaseCrossValidator):
+    """Reproduce the original three 3-fold runs with seeds 42, 43, and 44."""
 
     def __init__(self, n_splits=3, random_states=(42, 43, 44)):
         self.n_splits = n_splits
@@ -34,7 +27,7 @@ class ThreeSeedStratifiedKFold(BaseCrossValidator):
             yield from splitter.split(X, y_array)
 
 
-class RandomForestSoftVoteClassifier(ClassifierMixin, BaseEstimator):
+class SoftVotingRandomForestEnsemble(ClassifierMixin, BaseEstimator):
     """Fit five random forests and average their predicted probabilities."""
 
     def __init__(
@@ -67,59 +60,59 @@ class RandomForestSoftVoteClassifier(ClassifierMixin, BaseEstimator):
 
     def predict_proba(self, X):
         probabilities = [model.predict_proba(X) for model in self.models_]
-        return np.mean(np.array(probabilities), axis=0)
+        return np.mean(np.asarray(probabilities), axis=0)
 
     def predict(self, X):
-        # Preserve the original script's positional np.argmax semantics.
+        # This intentionally returns argmax column indices rather than indexing
+        # model.classes_, exactly matching the original script.
         return np.argmax(self.predict_proba(X), axis=1)
 
 
-def restore_original_target_labels(predictions, mode):
-    """Map predictions from transformed labels 0-6 to raw labels 1-7."""
+def restore_original_target_domain(predictions, mode):
+    """Map predictions from 0-6 back to the raw 1-7 target domain."""
     if mode == "fit":
-        # During fitting, a prediction node evaluates to the fitted estimator.
-        return None
-    return np.asarray(predictions) + 1
+        # In fit mode the prediction node contains the fitted estimator.
+        return predictions
+    return predictions + 1
 
 
 with skrub.config_context(eager_data_ops=False):
-    # 1. Load Data -- record the CSV read. Importing this file builds the plan
-    #    without reading the data. The original error/progress printing is not
-    #    part of producing the cross-validated score and is omitted.
+    # 1. Load Data — record the CSV read. The original try/except only customized
+    #    the missing-file message and is not part of producing the CV score.
     data = skrub.as_data_op("./input/train.csv").skb.apply_func(pd.read_csv)
 
-    # Row filtering changes the number of samples, so it must happen before the
-    # marks. This reproduces the original exclusion of target classes represented
-    # by fewer than three rows.
-    data = data.skb.apply_func(
-        drop_rare_target_classes,
-        target="Cover_Type",
-        n_splits=3,
-    )
+    # 2. Prepare data. Faithfully remove target classes with fewer than three
+    #    rows before marking X and y, since this content-dependent filtering
+    #    changes which rows are scored. Counting raw labels is equivalent to
+    #    counting the original labels shifted by -1.
+    raw_target = data["Cover_Type"]
+    class_counts = raw_target.value_counts()
+    problematic_classes = class_counts[class_counts < 3].index
+    filtered_data = data[
+        ~raw_target.isin(problematic_classes)
+    ].reset_index(drop=True)
 
-    # 2. Prepare data -- mark the RAW target and design matrix. The transformed
-    #    0-6 target used by the original is derived only after mark_as_y.
-    y_raw = data["Cover_Type"].skb.mark_as_y()
+    # Mark the RAW target, then perform the original 1-7 to 0-6 transformation
+    # downstream for model fitting. Predictions are mapped back to 1-7 below so
+    # accuracy is evaluated in the raw target domain.
+    y_raw = filtered_data["Cover_Type"].skb.mark_as_y()
     y_transformed = y_raw - 1
 
-    # The original repeated three-fold StratifiedKFold for seeds 42, 43, and 44,
-    # then averaged the three run means. Yielding all nine folds from one custom
-    # splitter produces the same unweighted meta-average.
-    X = data.drop(columns=["Id", "Cover_Type"]).skb.mark_as_X(
-        cv=ThreeSeedStratifiedKFold(
+    # The custom splitter emits the original nine folds: three 3-fold
+    # StratifiedKFold runs using random states 42, 43, and 44.
+    X = filtered_data.drop(columns=["Id", "Cover_Type"]).skb.mark_as_X(
+        cv=RepeatedSeedStratifiedKFold(
             n_splits=3,
             random_states=(42, 43, 44),
         ),
         split_kwargs={},
     )
 
-    # 3. Recorded feature engineering. Assigning both new columns before dropping
-    #    the original columns preserves the original feature values and order.
+    # 3. Recorded feature engineering and model. Derived columns are appended in
+    #    the same order as in the original, followed by the same column drops.
     features = X.assign(
         Hillshade_composite=(
-            X["Hillshade_9am"]
-            + X["Hillshade_Noon"]
-            + X["Hillshade_3pm"]
+            X["Hillshade_9am"] + X["Hillshade_Noon"] + X["Hillshade_3pm"]
         )
         / 3,
         Elevation_at_Hydrology=(
@@ -134,26 +127,28 @@ with skrub.config_context(eager_data_ops=False):
         ]
     )
 
-    # The original hand-rolled five-forest soft vote belongs in an estimator
-    # wrapper so all five models are fitted independently within every CV fold.
-    pred_transformed = features.skb.apply(
-        RandomForestSoftVoteClassifier(
-            n_sub_models=5,
-            n_estimators=100,
-            random_state_base=100,
-            n_jobs=-1,
-        ),
-        y=y_transformed,
+    # The wrapper preserves the original per-fold five-model soft-voting
+    # ensemble, including RandomForest seeds 100 through 104.
+    model = SoftVotingRandomForestEnsemble(
+        n_sub_models=5,
+        n_estimators=100,
+        random_state_base=100,
+        n_jobs=-1,
     )
+    pred_transformed = features.skb.apply(model, y=y_transformed)
 
-    # Restore predictions to the raw target domain for scoring. This is gated on
-    # eval_mode because prediction nodes hold fitted estimators in fit mode.
+    # Since mark_as_y holds the raw 1-7 labels, restore predictions to that
+    # domain. The operation is gated because in fit mode pred_transformed is the
+    # fitted estimator rather than an array of predictions.
     pred = pred_transformed.skb.apply_func(
-        restore_original_target_labels,
+        restore_original_target_domain,
         skrub.eval_mode(),
     )
 
-    # 4. Score. No cv= here -- the splitter on mark_as_X drives validation.
+    # 4. Score. No cv= here: the repeated stratified splitter on mark_as_X
+    #    drives validation. Averaging all nine fold accuracies equals the
+    #    original mean of its three per-run, three-fold means. Progress printing
+    #    from the manual loops is intentionally omitted.
     if __name__ == "__main__":
         search = pred.skb.make_grid_search(
             n_jobs=1,

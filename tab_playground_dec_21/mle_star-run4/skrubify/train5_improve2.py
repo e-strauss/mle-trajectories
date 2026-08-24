@@ -5,72 +5,63 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import StratifiedKFold
 
 
-def drop_classes_with_fewer_than_n_samples(df, target_column, n_samples):
-    """Reproduce the original pre-CV removal of classes too small to stratify."""
-    class_counts = df[target_column].value_counts()
-    problematic_classes = class_counts[class_counts < n_samples].index
-    if len(problematic_classes) == 0:
-        return df
-    return (
-        df.loc[~df[target_column].isin(problematic_classes)]
-        .reset_index(drop=True)
-    )
-
-
-def restore_original_target_labels(predictions, mode):
-    """Map model predictions from 0–6 back to the raw target domain 1–7."""
-    if mode == "fit":
-        # In fit mode, a prediction node contains the fitted estimator.
-        return predictions
-    return predictions + 1
-
-
 with skrub.config_context(eager_data_ops=False):
-    # 1. Load Data — record the CSV read. The original FileNotFoundError handling
-    #    is unnecessary: pd.read_csv will still raise if the file is absent.
+    # 1. Load Data — record the read so importing this module does not access the
+    #    file. The original eager FileNotFoundError handling is omitted because
+    #    the lazy read occurs only when the plan is scored.
     data = skrub.as_data_op("./input/train.csv").skb.apply_func(pd.read_csv)
 
-    # 2. Prepare data. The original globally excluded classes with fewer than
-    #    three samples before cross-validation. This row filtering must remain
-    #    before the marks because it changes the number of rows.
-    data_cv = data.skb.apply_func(
-        drop_classes_with_fewer_than_n_samples,
-        "Cover_Type",
-        3,
-    )
+    # 2. Prepare Data — faithfully remove classes with fewer than three samples
+    #    before marking X and y. The original data-dependent if/else is expressed
+    #    as recorded operations, so the filter also remains present when no class
+    #    ultimately satisfies the condition.
+    target_for_filtering = data["Cover_Type"] - 1
+    class_counts = target_for_filtering.value_counts()
+    problematic_classes = class_counts[class_counts < 3].index
+    keep_rows = ~target_for_filtering.isin(problematic_classes)
+    filtered_data = data[keep_rows].reset_index(drop=True)
 
-    # Mark the RAW target. The 1–7 to 0–6 transformation is recorded afterward,
-    # and predictions are converted back to 1–7 before scoring.
-    y = data_cv["Cover_Type"].skb.mark_as_y()
+    # Mark the RAW target as required. Its 0-based transform is applied only after
+    # mark_as_y. Stratifying on labels 1-7 is equivalent to stratifying on 0-6.
+    y = filtered_data["Cover_Type"].skb.mark_as_y()
     y_transformed = y - 1
 
-    # The manual three-fold loop becomes the same StratifiedKFold splitter on X.
-    X = data_cv.drop(columns=["Id", "Cover_Type"]).skb.mark_as_X(
+    # Mark the raw design matrix before feature engineering. The splitter exactly
+    # reproduces the original manual three-fold StratifiedKFold loop.
+    X = filtered_data.drop(columns=["Id", "Cover_Type"]).skb.mark_as_X(
         cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42),
         split_kwargs={},
     )
 
-    # 3. Recorded feature engineering. Assign appends the four engineered
-    #    columns in the same order as the original script.
-    aspect_radians = X["Aspect"].skb.apply_func(np.radians)
+    # 3. Recorded feature engineering — the generated columns are appended in the
+    #    same order as in the original script.
     features = X.assign(
         Hillshade_composite=(
             X["Hillshade_9am"] + X["Hillshade_Noon"] + X["Hillshade_3pm"]
         )
-        / 3,
+        / 3
+    )
+    features = features.assign(
         Elevation_at_Hydrology=(
-            X["Elevation"] - X["Vertical_Distance_To_Hydrology"]
-        ),
-        Slope_x_Aspect_sin=(
-            X["Slope"] * aspect_radians.skb.apply_func(np.sin)
-        ),
-        Slope_x_Aspect_cos=(
-            X["Slope"] * aspect_radians.skb.apply_func(np.cos)
-        ),
-    ).drop(
+            features["Elevation"] - features["Vertical_Distance_To_Hydrology"]
+        )
+    )
+
+    aspect_radians = features["Aspect"].skb.apply_func(np.radians)
+    aspect_sin = aspect_radians.skb.apply_func(np.sin)
+    aspect_cos = aspect_radians.skb.apply_func(np.cos)
+
+    features = features.assign(
+        Slope_x_Aspect_sin=features["Slope"] * aspect_sin
+    )
+    features = features.assign(
+        Slope_x_Aspect_cos=features["Slope"] * aspect_cos
+    )
+    features = features.drop(
         columns=["Hillshade_9am", "Hillshade_Noon", "Hillshade_3pm"]
     )
 
+    # Same model family and every hyperparameter explicitly set by the original.
     model = RandomForestClassifier(
         n_estimators=100,
         random_state=42,
@@ -78,15 +69,21 @@ with skrub.config_context(eager_data_ops=False):
     )
     pred_transformed = features.skb.apply(model, y=y_transformed)
 
-    # Accuracy is unchanged by this one-to-one label shift, but predictions must
-    # be restored to the raw marked target's domain for skrub scoring.
+    # The original scored predictions in the transformed 0-6 label space. Because
+    # the plan marks the raw 1-7 target, add one back to predictions; accuracy is
+    # therefore exactly the same. Prediction arithmetic is gated because in fit
+    # mode this node contains the fitted estimator rather than predicted labels.
+    def restore_original_labels(prediction, mode):
+        if mode == "fit":
+            return prediction
+        return prediction + 1
+
     pred = pred_transformed.skb.apply_func(
-        restore_original_target_labels,
-        skrub.eval_mode(),
+        restore_original_labels, skrub.eval_mode()
     )
 
-    # 4. Score. No cv= here—the splitter on mark_as_X drives the evaluation.
-    #    The original has no test-set prediction or submission step.
+    # 4. Score — no cv= here; the splitter attached to mark_as_X drives the
+    #    cross-validation. Test/submission work is absent, as in the original.
     if __name__ == "__main__":
         search = pred.skb.make_grid_search(
             n_jobs=1,

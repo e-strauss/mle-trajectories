@@ -6,13 +6,6 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import StratifiedKFold
 
 
-def drop_rare_target_classes(df, target_col, n_splits):
-    """Reproduce the original pre-CV removal of underrepresented classes."""
-    class_counts = df[target_col].value_counts()
-    problematic_classes = class_counts[class_counts < n_splits].index
-    return df.loc[~df[target_col].isin(problematic_classes)].reset_index(drop=True)
-
-
 class AddSoilInteractions(TransformerMixin, BaseEstimator):
     """Create the original dynamically discovered interaction columns."""
 
@@ -55,11 +48,15 @@ with skrub.config_context(eager_data_ops=False):
 
     # 2. Prepare Data — row filtering must happen before the marks because it
     #    changes the number of samples. Counting raw labels 1-7 is equivalent to
-    #    counting the original transformed labels 0-6.
-    filtered_data = data.skb.apply_func(
-        drop_rare_target_classes,
-        target_col="Cover_Type",
-        n_splits=3,
+    #    counting the original transformed labels 0-6. Written as recorded ops
+    #    (value_counts / isin / boolean mask), mirroring the original line for
+    #    line, so every step is its own node in the plan instead of one opaque
+    #    function call.
+    raw_target = data["Cover_Type"]
+    class_counts = raw_target.value_counts()
+    problematic_classes = class_counts[class_counts < 3].index
+    filtered_data = data[~raw_target.isin(problematic_classes)].reset_index(
+        drop=True
     )
 
     # Mark the RAW target as required. Its 0-6 transformation is recorded only
