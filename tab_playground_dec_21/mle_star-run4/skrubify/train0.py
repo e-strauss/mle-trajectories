@@ -1,5 +1,5 @@
 import pandas as pd
-import skrub
+import stratum as skrub
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import StratifiedKFold
 
@@ -12,7 +12,7 @@ def restore_original_labels(predictions, mode):
     return predictions + 1
 
 
-with skrub.config_context(eager_data_ops=False):
+with skrub.config_context(eager_data_ops=False), skrub.config(scheduler=True, debug_graph=True):
     # 1. Load Data — record the CSV read. The original FileNotFoundError message
     #    and progress printing are dropped because they do not produce the CV score.
     train_df = skrub.as_data_op("./input/train.csv").skb.apply_func(pd.read_csv)
