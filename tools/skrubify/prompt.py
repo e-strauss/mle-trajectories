@@ -109,6 +109,8 @@ with skrub.config_context(eager_data_ops=False):
             n_jobs=1, fitted=True, refit=False, scoring=<sklearn scorer string>
         )
         print(search.results_)   # one row per variant when the plan has choices
+        for variant_score in search.results_["mean_test_score"]:
+            print(f"Variant score: {variant_score}")
         print(f"Final Validation Performance: {search.results_['mean_test_score'].iloc[0]}")
 ```
 
@@ -123,12 +125,11 @@ Hard requirements:
 3. `.skb.apply()` is only for scikit-learn estimators. A plain function
    (`np.log1p`, `pd.to_datetime`, ...) goes through `.skb.apply_func(f, *args)`.
 4. Never pass `cv=` to `make_grid_search` -- it would override `mark_as_X`.
-   Always pass `split_kwargs={}` alongside `cv=` on `mark_as_X` (or a real dict
-   such as `{"groups": data["user_id"]}` when the splitter needs per-row
-   metadata). skrub < 0.10 stores a missing `split_kwargs` as None and then does
-   `**None` when the search asks for the split count, so a plan that builds fine
-   dies at scoring time with `TypeError: ... argument after ** must be a mapping,
-   not NoneType`.
+   Always pass `split_kwargs={}` alongside `cv=` on `mark_as_X` (guide section 3;
+   a real dict such as `{"groups": data["user_id"]}` when the splitter needs
+   per-row metadata). A non-standard split -- rows that must stay in the training
+   part, a repeat over several seeds -- is a `BaseCrossValidator` subclass passed
+   as `cv=`, not something hand-rolled in the plan.
 5. Mark the RAW target. Any transform of y happens after `mark_as_y`, and the
    inverse is applied to the predictions gated on `skrub.eval_mode()` (in "fit"
    mode a prediction node evaluates to the fitted estimator, so ungated
@@ -136,6 +137,14 @@ Hard requirements:
 6. Write fine-grained recorded operations. No Python loop over columns (use
    `skrub.selectors` + transformer broadcasting), no in-place `df["c"] = ...`
    (use `.assign(...)`), and no multi-step `@skrub.deferred` block.
+   EXCEPTION -- when the original builds NEW NAMED COLUMNS by looping over
+   columns it discovered from the data (`for soil in soil_cols:
+   X[f"{soil}_x_Elevation"] = ...`), put that loop inside a small
+   `TransformerMixin, BaseEstimator` transformer's `transform` and apply it with
+   `X.skb.apply(YourTransformer())`. A vectorised substitute such as
+   `PolynomialFeatures` + a rename reproduces the values but neither the names
+   nor the column ORDER, which changes what a randomised model actually fits
+   (guide pitfall 20).
 7. Data-dependent constants that the original computed at runtime (e.g.
    `num_class=len(y.unique())`) must become concrete literals, since the
    estimator is constructed once while the plan is built. Infer the value from

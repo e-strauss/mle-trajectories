@@ -14,9 +14,6 @@ dependencies = [
     "xgboost>=3.3.0",
 ]
 
-[project.optional-dependencies]
-llm = ["litellm>=1.60"]
-
 [project.scripts]
 pipeline-analyzer = "pipeline_analyzer.__main__:main"
 skrubify = "skrubify.__main__:main"

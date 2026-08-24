@@ -21,7 +21,8 @@ from pathlib import Path
 
 from .core import Result, SkrubifyConfig, build_messages, default_out_path, skrubify_file
 from .llm import LLM, PROVIDERS, load_env, missing_keys, resolve_model
-from .validate import run_pipeline, validate
+from .validate import (compare_scores, parse_scores,
+                       parse_scores_with_precision, run_pipeline, validate)
 
 
 def _add_args(ap: argparse.ArgumentParser) -> None:
@@ -101,13 +102,28 @@ def _run_and_compare(pipeline: Path, source: Path | None, args) -> int:
     if not ok:
         print(f"  RUN FAILED: {detail}")
         return 1
-    print(f"  skrubified score: {score!r}")
+    new_scores = parse_scores(detail) or ([score] if score is not None else [])
+    if len(new_scores) > 1:
+        print(f"  skrubified scores ({len(new_scores)} variants): "
+              f"{[round(v, 6) for v in new_scores]}")
+    else:
+        print(f"  skrubified score: {score!r}")
     if not (args.compare_source and source):
         return 0
     print(f"  running {source.name} (original) in {args.run_in} …",
           file=sys.stderr, flush=True)
     ok_s, score_s, detail_s = run_pipeline(source, args.run_in, python=args.python,
                                            timeout=args.run_timeout)
+    old_scores, tol = parse_scores_with_precision(detail_s)
+    if old_scores and new_scores:
+        # Compare the FULL score lists: a multi-variant original prints one score
+        # per experiment and the fused plan one per grid row.
+        if len(old_scores) > 1 or len(new_scores) > 1:
+            print(f"  original scores ({len(old_scores)}): "
+                  f"{[round(v, 6) for v in old_scores]}")
+            print(f"  comparison:       "
+                  f"{compare_scores(new_scores, old_scores, tol=tol)}")
+            return 0
     if not ok_s:
         # A multi-variant source (an ablation study) prints several scores and no
         # single "Final Validation Performance" line, so there is nothing to diff

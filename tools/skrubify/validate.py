@@ -131,11 +131,22 @@ def validate(path: Path, *, python: str | None = None, strict: bool = False,
                       missing_module=missing)
 
 
+# Every pattern is applied and the matches pooled: a script may print its
+# variants one way ("Ablation 1 ... Accuracy: 0.9482") and a final summary
+# another ("Final Validation Performance: 0.94886"), and picking only the first
+# matching pattern would keep the summary and miss all the variants. Repeated or
+# rounded restatements of the same number are harmless -- the comparison only
+# asks that every score the CONVERSION produced is found among them.
 SCORE_PATTERNS = (
     r"Final Validation (?:Performance|Score)\s*:\s*(-?[\d.]+(?:[eE][-+]?\d+)?)",
     r"mean_test_score\s*:\s*(-?[\d.]+(?:[eE][-+]?\d+)?)",
     r"(?:CV|cross-validat\w+)[^\n:]*:\s*(-?[\d.]+(?:[eE][-+]?\d+)?)",
+    r"(?i)(?:performance|accuracy|score|r2|rmse|auc)[^\n:]*:\s*"
+    r"(-?[\d.]+(?:[eE][-+]?\d+)?)",
 )
+
+
+VARIANT_PATTERN = r"Variant score:\s*(-?[\d.]+(?:[eE][-+]?\d+)?)"
 
 
 def parse_score(stdout: str) -> float | None:
@@ -145,6 +156,71 @@ def parse_score(stdout: str) -> float | None:
         if found:
             return float(found[-1])
     return None
+
+
+def parse_scores(stdout: str) -> list[float]:
+    """EVERY score in the output, in print order.
+
+    A converted plan with choices prints one `Variant score:` line per grid row,
+    which is what a multi-variant original (an ablation study printing a score per
+    experiment) has to be compared against -- comparing one number from each side
+    picks the original's LAST experiment against the plan's BEST variant, which is
+    meaningless.
+    """
+    return parse_scores_with_precision(stdout)[0]
+
+
+def parse_scores_with_precision(stdout: str) -> tuple[list[float], float]:
+    """Scores plus the tolerance implied by how many decimals they were PRINTED to.
+
+    Scripts commonly print `f"{score:.4f}"`, so 0.94727 reaches us as "0.9473".
+    Comparing that against a full-precision score at 1e-6 reports a spurious
+    mismatch; the honest tolerance is half of the last printed digit.
+    """
+    raw = re.findall(VARIANT_PATTERN, stdout)
+    if not raw:
+        # Pool every pattern, but keep each NUMBER once: two patterns matching the
+        # same text (a "Final Validation Performance:" line also matches the
+        # generic one) must not count as two scores. Dedupe by position in the
+        # output, so the same value printed twice in two places still counts twice.
+        seen: dict[int, str] = {}
+        for pattern in SCORE_PATTERNS:
+            for m in re.finditer(pattern, stdout):
+                seen.setdefault(m.start(1), m.group(1))
+        raw = [seen[k] for k in sorted(seen)]
+    if not raw:
+        return [], 1e-6
+    decimals = min((len(t.split(".")[1]) if "." in t else 0) for t in raw)
+    return [float(t) for t in raw], max(1e-6, 0.5 * 10 ** -decimals)
+
+
+def compare_scores(new: list[float], old: list[float], tol: float = 1e-6) -> str:
+    """Human-readable verdict over two score lists, order-independent."""
+    if not new or not old:
+        return "no comparable scores"
+    if len(new) == 1 and len(old) == 1:
+        delta = new[0] - old[0]
+        verdict = ("identical" if delta == 0 else
+                   "close" if abs(delta) < 1e-3 else "DIFFERENT")
+        return f"{new[0]!r} vs {old[0]!r}  delta {delta:+.6g}  ({verdict})"
+    matched, unmatched = 0, []
+    remaining = list(old)
+    for value in new:
+        hit = next((o for o in remaining if abs(o - value) <= tol), None)
+        if hit is None:
+            unmatched.append(value)
+        else:
+            remaining.remove(hit)
+            matched += 1
+    bits = [f"{matched}/{len(new)} variant scores found in the original's "
+            f"{len(old)} printed number(s) within {tol:g}"]
+    if unmatched:
+        bits.append(f"NOT FOUND in the original: {[round(v, 6) for v in unmatched]}")
+    if remaining:
+        # Usually just the same scores restated (a summary block, or a rounded
+        # and a full-precision copy of one number) -- not evidence of a problem.
+        bits.append(f"({len(remaining)} other number(s) printed by the original)")
+    return "; ".join(bits)
 
 
 def run_pipeline(path: Path, cwd: Path, *, python: str | None = None,

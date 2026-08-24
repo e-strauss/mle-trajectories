@@ -800,23 +800,16 @@ dependencies = [
     { name = "xgboost" },
 ]
 
-[package.optional-dependencies]
-llm = [
-    { name = "litellm" },
-]
-
 [package.metadata]
 requires-dist = [
     { name = "catboost", specifier = ">=1.2.10" },
     { name = "lightgbm", specifier = ">=4.7.0" },
     { name = "litellm", specifier = ">=1.97.0" },
-    { name = "litellm", marker = "extra == 'llm'", specifier = ">=1.60" },
     { name = "skorch", specifier = ">=1.4.0" },
     { name = "stratum-ai", git = "https://github.com/deem-data/stratum.git" },
     { name = "torch", specifier = ">=2.13.0" },
     { name = "xgboost", specifier = ">=3.3.0" },
 ]
-provides-extras = ["llm"]
 
 [[package]]
 name = "mpmath"

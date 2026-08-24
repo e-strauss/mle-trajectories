@@ -1,9 +1,8 @@
 """Provider-agnostic chat completion through litellm, plus dot-file key loading.
 
-litellm is imported lazily so the rest of the tool (`--check`, `--print-prompt`)
-works without it installed:
-
-    uv pip install litellm
+litellm is a project dependency (`uv sync`), but it is imported lazily so the
+rest of the tool (`--check`, `--print-prompt`) still works in an environment
+without it.
 
 Model strings are litellm's ``<provider>/<model>``. Pass ``--provider`` and
 ``--model`` separately (``--provider gemini --model gemini-2.5-pro``), or a single

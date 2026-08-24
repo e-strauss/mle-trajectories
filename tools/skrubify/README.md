@@ -40,9 +40,9 @@ existing layout. `-o` takes a file (single source) or a directory.
 
 ## Install
 
-```bash
-uv pip install litellm          # only needed for the LLM call
-```
+`litellm` is a normal project dependency, so `uv sync` is all it takes. It is
+still imported lazily, so `--check` and `--print-prompt` work in an environment
+without it.
 
 API keys come from a dot file — `.env`, `.env.local` or `.skrubify.env`,
 searched from the current directory up to the repo root, then inside the package
@@ -61,7 +61,19 @@ their default).
    holding the output contract and translation rules; the full skrub DataOps
    guide (`tools/skrub_dataops_summary.md`, override with `--guide`); and
    few-shot pairs from `examples/` (`NN_source.py` + `NN_skrub.py`, override with
-   `--examples-dir` / `--n-examples`). ~16k tokens by default.
+   `--examples-dir` / `--n-examples`). ~19k tokens by default.
+
+   **Which of the three to edit** when something needs fixing: the system message
+   owns the *conversion contract* (output shape, what counts as faithful, what to
+   drop); the guide owns *general skrub knowledge* (API behaviour, version bugs,
+   pitfalls) and is worth expanding whenever a run teaches something true of skrub
+   independently of this tool — pitfalls 17-20 and the `split_kwargs` / custom
+   splitter / `mean_test_score` notes in section 3, 9 and 11 all came from
+   conversions failing here. Keep the rule in the contract short and let the guide
+   carry the reasoning, rather than duplicating the explanation in both. If the
+   guide is *wrong* rather than incomplete, fix the guide — its section 2 skeleton
+   emitted `mark_as_X(cv=...)` without `split_kwargs`, which cannot be scored on
+   skrub 0.8, and every conversion inherited that until the guide was corrected.
 2. **Extract** — the longest fenced ```python block of the reply becomes the file.
 3. **Validate** (`checks.py`, `validate.py`) — two layers, neither of which needs
    the dataset:
@@ -158,6 +170,46 @@ the original's list comprehension over `X.columns` (which a plan cannot express)
 and the rare-class filter as
 `data[raw_target.groupby(raw_target).transform("size") >= 3]` — a recorded
 reformulation of `value_counts()` + `isin` + index-based `drop`.
+
+## Sweep over a whole mle_star run (22 scripts)
+
+`tab_playground_dec_21/mle_star-run4`, gpt-5.6-sol, each conversion validated,
+executed on a 100k-row sample and compared against the original:
+
+| group | scripts | result |
+|---|---|---|
+| single-pipeline (`train*`, `init_code_*`, `ensemble/*`) | 12 | score identical or within float noise (1e-16), except `train0_1` at -1.7e-9 (structural: fold-mean vs pooled OOF) |
+| ablation studies (`ablation_0` … `ablation_9`) | 10 | fused into one `choose_from`; **every** variant score found among the original's printed scores within its printing precision |
+
+All 22 pass `--check` (plan builds, no rule errors). 15 converted in one shot, 7
+needed a single repair round, none needed two, none failed. ~$0.13 per script.
+
+Custom splitters the conversions invented where the plan needed one:
+`SingletonClassTrainingSplitter` (a class with one sample kept in train only),
+`AugmentedStratifiedKFold` (rare-class rows appended to every training fold),
+`ExplicitRepeatedStratifiedKFold(n_repeats=5)` and `ThreeSeedStratifiedKFold`
+(originals that averaged over several seeds).
+
+### What the sweep changed in the tool
+
+Running 22 real scripts surfaced three things no smaller test did:
+
+1. **Column-dependent feature engineering drifted the score.** An original that
+   loops over data-discovered columns to build named interactions
+   (`f"{soil}_x_Elevation"`) was converted with `PolynomialFeatures` + a rename:
+   identical VALUES, but 200 columns named in the opposite argument order and in
+   a different column order. A forest ignores names but not order — per-split
+   feature subsampling changes, and the score moved by 5e-4. The contract now
+   routes that case to a small `TransformerMixin` looping inside `transform`,
+   where names and order are reproduced exactly; the score went to identical.
+2. **Comparing one number per side is meaningless for ablations.** An ablation
+   script prints a score per experiment and a fused plan one per grid row, so
+   "last printed vs best row" compared unrelated numbers (one case looked like a
+   0.36 regression). Converted plans now print a `Variant score:` line per row,
+   and the runner matches the two score LISTS.
+3. **Tolerance has to follow the source's own printing.** A script printing
+   `:.4f` cannot be compared at 1e-6 — 0.94727 arrives as "0.9473". The
+   tolerance is now derived from the number of decimals actually printed.
 
 ## Observed behaviour (gpt-5.5 / gpt-5.6-sol, real runs)
 

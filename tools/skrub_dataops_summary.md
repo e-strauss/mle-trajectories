@@ -89,7 +89,8 @@ data = data.skb.subsample(n=1000)
 #    HERE on mark_as_X (section 3), the only place it can live.
 y = data["target"].skb.mark_as_y()
 X = data.drop(columns=["target", "Id"]).skb.mark_as_X(
-        cv=KFold(n_splits=5, shuffle=True, random_state=42))
+        cv=KFold(n_splits=5, shuffle=True, random_state=42),
+        split_kwargs={})            # REQUIRED on skrub < 0.10 -- see section 3
 
 # 4. Preprocess / feature engineer using recorded operations (sections 4-6).
 
@@ -174,6 +175,69 @@ edit `make_cv()` once and pass `groups="col"` to `load_xy`.
 > `TimeSeriesSplit` on row order) are *static* — they could in principle be
 > passed at scoring time. We still set them on `mark_as_X` so there is one
 > uniform, harness-compatible convention for every task.
+
+### Always pass `split_kwargs` together with `cv` (skrub < 0.10)
+
+**On skrub 0.8/0.9, `mark_as_X(cv=...)` without `split_kwargs` builds a plan that
+crashes when it is scored** (verified on 0.8.0):
+
+```
+TypeError: sklearn.model_selection._split._BaseKFold.get_n_splits()
+           argument after ** must be a mapping, not NoneType
+```
+
+`mark_as_X` stores the missing `split_kwargs` as `None`, and skrub's internal
+`_Splitter` then evaluates `self.splitter.split(X, y, **self.split_kwargs)`.
+Fixed upstream in skrub 0.10 (`self.split_kwargs = split_kwargs or {}`). Pass an
+explicit empty dict when the splitter needs no per-row metadata — it is valid on
+every version, so this is the pattern to use unconditionally:
+
+```python
+X = data.drop(columns=["target"]).skb.mark_as_X(
+        cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42),
+        split_kwargs={})
+```
+
+Note *when* this fails: the plan builds, `describe_steps()` works, previews work
+— it only raises inside `make_grid_search` / any scoring entry point that uses
+the plan's splitter. Building a plan is therefore **not** evidence that it can be
+scored (section 11).
+
+### Custom splitters: any `BaseCrossValidator` works
+
+`cv=` is not limited to scikit-learn's splitters. A plain
+`sklearn.model_selection.BaseCrossValidator` subclass is accepted and driven per
+fold like any other (verified), which is how a non-standard split gets into a
+plan. Useful shapes:
+
+- **rows that must always be in TRAIN, never in test** — e.g. a class with too
+  few samples for `StratifiedKFold`, which the eager version of the script
+  dropped or hand-appended per fold:
+  ```python
+  class TrainOnlyRareClasses(BaseCrossValidator):
+      def __init__(self, n_splits=3, random_state=42):
+          self.n_splits, self.random_state = n_splits, random_state
+
+      def get_n_splits(self, X=None, y=None, groups=None):
+          return self.n_splits
+
+      def split(self, X, y, groups=None):
+          y = np.asarray(y).reshape(-1)
+          classes, counts = np.unique(y, return_counts=True)
+          rare = np.isin(y, classes[counts < self.n_splits])
+          rare_idx, ok_idx = np.flatnonzero(rare), np.flatnonzero(~rare)
+          inner = StratifiedKFold(self.n_splits, shuffle=True,
+                                  random_state=self.random_state)
+          for tr, te in inner.split(np.zeros((len(ok_idx), 1)), y[ok_idx]):
+              yield np.concatenate([ok_idx[tr], rare_idx]), ok_idx[te]
+  ```
+  Keep those rows **in** `X` and let the splitter place them, rather than
+  filtering them out before `mark_as_X`.
+- **averaging over several seeds** — a script that repeats its CV with 3 seeds
+  and averages becomes one splitter yielding all 3×k folds (`mean_test_score` is
+  then the mean over every fold, which is what the script computed).
+- **a fixed hold-out** — `ShuffleSplit(n_splits=1, test_size=t, random_state=r)`
+  reproduces a single `train_test_split(test_size=t, random_state=r)`.
 
 **Multiple input tables:** give each its own variable and record the join with the
 pandas API.
@@ -477,6 +541,12 @@ best_score = search.results_["mean_test_score"].iloc[0]   # row 0 = best
 
 ### `results_` shape (verified)
 - It is a **pandas DataFrame, sorted best-first** (row 0 has the highest score).
+- `mean_test_score` is the **unweighted mean of the per-fold test scores**
+  (sklearn's `cv_results_`), *not* a metric pooled over all out-of-fold rows. The
+  two differ slightly whenever folds have unequal sizes — a script that
+  concatenates OOF predictions and scores them once lands ~1e-9 away from the
+  same pipeline scored here. That gap is structural: it cannot be closed by
+  `make_grid_search`, and it is not a sign of a broken pipeline.
 - **No choices in the plan** → one row, columns `['mean_test_score']`.
 - **With choices** → one row per parameter combination; each named choice becomes
   its own column plus `mean_test_score`. Example with a choice named `"alpha"`:
@@ -621,6 +691,15 @@ after the load (previews stay cheap, CV score unaffected) or wrap the plan
 construction in `with skrub.config_context(eager_data_ops=False):` to skip
 eager previews entirely.
 
+**Two levels of "does it work", and only the second one is proof.** Importing a
+plan under `config_context(eager_data_ops=False)` builds the whole graph without
+reading a byte of data — cheap, needs no dataset, and catches every structural
+mistake (a typo'd column op, `.skb.apply` on a plain function, a missing mark).
+It does *not* run the splitter, fit any estimator, or call the scorer, so it
+cannot catch pitfall 17's `split_kwargs=None`, an estimator that rejects a
+column's dtype, a metric that refuses negative predictions, or a target left in
+the wrong domain. Build first, then score.
+
 ### Exploration scripts (data_exploration_N.py)
 
 For exploration scripts, **use plain `pd.read_csv` directly** — do NOT call
@@ -719,6 +798,39 @@ pipeline plan (i.e. the file defines `pred`, `DESCRIPTION`, `PARENT`).
     `VotingClassifier`/`StackingClassifier`'s `_validate_estimators()`, as a
     confusing `ValueError: The estimator Foo should be a classifier.` raised
     deep inside the meta-estimator's `fit()` — nowhere near the actual bug.
+17. **On skrub < 0.10, always pass `split_kwargs={}` next to `cv=`** on
+    `mark_as_X` (section 3). Without it the plan builds and previews fine, then
+    dies inside `make_grid_search` with `TypeError: ... argument after ** must be
+    a mapping, not NoneType`.
+18. **A plan that builds is not a plan that scores.** Building under
+    `config_context(eager_data_ops=False)` proves the graph is well-formed and
+    touches no data; it does not exercise the splitter, the estimators' `fit`, or
+    the scorer. Pitfall 17, an estimator rejecting a dtype, and a metric that
+    refuses negative predictions all pass the build and fail the run. Score the
+    plan before believing it.
+19. **Per-fold logic that cannot be recorded belongs in a wrapper estimator, not
+    in the plan.** Recorded ops cover dataframe transformations; anything the
+    eager script did *inside its fold loop* that is not a dataframe
+    transformation — augmenting the training rows, fitting several models and
+    averaging their `predict_proba`, a torch training loop, computing
+    `class_weight` from that fold's `y` — goes into a small
+    `ClassifierMixin, BaseEstimator` / `RegressorMixin, BaseEstimator` wrapper
+    applied with `.skb.apply(wrapper, y=y)`. Inside its `fit` you are in ordinary
+    Python: loops, `.copy()`, an **inner** `train_test_split` for early stopping
+    (legitimate — it is per-fit, not the outer CV). skrub re-fits the wrapper per
+    fold, so the logic stays leakage-free. Mixin first in the bases (pitfall 16).
+20. **A vectorised substitute for a column loop reproduces values, not column
+    names or order — and order changes randomised models.** Replacing
+    `for c in soil_cols: X[f"{c}_x_Elevation"] = X[c] * X["Elevation"]` with
+    `PolynomialFeatures(interaction_only=True)` plus a rename gives numerically
+    identical columns named `Elevation_x_Soil_Type3` instead of
+    `Soil_Type3_x_Elevation`, in a different column order. Names are cosmetic,
+    but column ORDER feeds the per-split feature subsampling of
+    `RandomForest`/boosters, so the CV score moves (measured: 5e-4 on a forest).
+    When exact names/order matter, put the loop inside a
+    `TransformerMixin, BaseEstimator` transformer's `transform` (pitfall 19) —
+    there a Python loop over `X.columns` is fine, because it runs at fit time on
+    a real dataframe rather than being recorded.
 
 ---
 
@@ -739,7 +851,7 @@ data = (skrub.as_data_op("train.csv")
 # --- Target and features (mark early; CV splitter set on mark_as_X) ---
 y = data["SalePrice"].skb.mark_as_y()
 X = data.drop(columns=["SalePrice", "Id"]).skb.mark_as_X(
-        cv=KFold(n_splits=5, shuffle=True, random_state=42))
+        cv=KFold(n_splits=5, shuffle=True, random_state=42), split_kwargs={})
 
 # --- Light feature engineering (recorded) ---
 X = X.assign(TotalSF=X["1stFlrSF"] + X["2ndFlrSF"] + X["TotalBsmtSF"])
