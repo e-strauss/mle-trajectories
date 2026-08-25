@@ -22,7 +22,7 @@ class SkrubifyConfig:
     validate_build: bool = True
     strict: bool = False
     python: str | None = None               # interpreter used to build the plan
-    timeout: int = 120                      # per plan build
+    timeout: int = 300                      # per plan build
     keep_attempts: bool = False             # also write <stem>.attemptN.py
     verbose: bool = True
 
@@ -107,6 +107,14 @@ def skrubify_file(source: Path, out_path: Path | None = None, *,
             out_path.with_suffix(f".attempt{i}.py").write_text(code)
         v = validate(out_path, python=cfg.python, strict=cfg.strict,
                      build=cfg.validate_build, timeout=cfg.timeout)
+        if v.build_timed_out and v.checks.ok:
+            # Out of clock, not out of correctness: give a big plan more time
+            # rather than spending a repair round telling the model to fix a
+            # stopwatch (measured: 0020 burned 3 attempts that way).
+            _log(cfg, f"    build timed out after {cfg.timeout}s -- retrying "
+                      f"with {cfg.timeout * 3}s")
+            v = validate(out_path, python=cfg.python, strict=cfg.strict,
+                         build=cfg.validate_build, timeout=cfg.timeout * 3)
         attempt = Attempt(index=i, code=code, validation=v,
                           seconds=time.monotonic() - t0)
         result.attempts.append(attempt)

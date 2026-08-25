@@ -539,7 +539,11 @@ class GetXY(TransformerMixin, BaseEstimator):
         return dict(zip(("X", "X_val", "y", "y_val"), parts))
 
     def transform(self, X):
-        return {"X": X}          # predict mode: no y, no eval set needed
+        # Predict mode has no y and needs no eval set -- but return the SAME KEYS
+        # as fit_transform, with None for the fit-only ones. Omitting them makes
+        # the `X_val`/`y_val` lookups fail if an executor evaluates them at
+        # predict time (stratum does: `KeyError: 'X_val'`).
+        return {"X": X, "X_val": None, "y": None, "y_val": None}
 
 
 X_y = X.skb.apply(GetXY(), y=y, how="no_wrap")
@@ -561,10 +565,13 @@ Four things make this work, and three of them are easy to get wrong:
    estimator through `ApplyToSubFrame`, which enforces a pandas container out and
    rejects the dict with `TypeError: GetXY.fit_transform returned a result of
    type dict, but a pandas DataFrame was expected` (pitfall 22).
-2. **A transformer, not `apply_func`/`deferred`.** `transform` returning only
-   `{"X": X}` means skrub never tries to evaluate `y`, `X_val` or `y_val` in
-   predict mode, where they do not exist. A plain function would have to branch on
-   `skrub.eval_mode()` by hand.
+2. **A transformer, not `apply_func`/`deferred`.** A plain function would have to
+   branch on `skrub.eval_mode()` by hand to avoid touching `y` in predict mode.
+   Keep the key SET stable between `fit_transform` and `transform` and fill the
+   fit-only entries with `None`: `X_val`/`y_val` are consumed only by
+   `fit_kwargs`, so their value is irrelevant at predict time, but an executor
+   that walks those nodes anyway needs the keys to exist. skrub tolerates either
+   form; stratum requires the keys.
 3. **`X_y.get("y", y)`** supplies the fallback for predict/score mode, where the
    dict has no `"y"` key. Not needed if the scorer is declared with
    `.skb.with_scoring`.

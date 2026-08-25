@@ -14,11 +14,36 @@ import io
 import json
 import runpy
 import sys
+import signal
 import traceback
 from pathlib import Path
 
 MAX_STDOUT = 2000
+INSPECT_BUDGET = 30      # seconds per advisory graph-inspection call
 TB_LIMIT = 12
+
+
+@contextlib.contextmanager
+def _budget(seconds: int):
+    """Abort a pure-Python introspection call that runs too long.
+
+    Graph inspection (`_evaluation.nodes`, `describe_steps`) walks PATHS, so a
+    plan built from a long chain of filters that each reference their input twice
+    -- four coordinate-clipping blocks in a row, say -- can take longer to
+    DESCRIBE than to build, without ever touching data. None of it is a
+    correctness check (the static rules already verify mark_as_X / mark_as_y), so
+    a candidate that builds must not be failed because its diagnostics ran long.
+    """
+    def _expire(signum, frame):
+        raise TimeoutError("introspection budget exceeded")
+
+    previous = signal.signal(signal.SIGALRM, _expire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def _fmt_exc(exc: BaseException) -> str:
@@ -84,15 +109,23 @@ def main(argv=None) -> int:
                         "DataOp -- it must be the node returned by .skb.apply(model, y=y)"
                     )
                 out["stage"] = "inspect"
-                has_x, has_y, cv = _marks(pred)
+                # Everything below is advisory. Each call gets its own budget so
+                # one pathological graph traversal cannot sink a valid plan.
+                has_x = has_y = cv = None
+                with contextlib.suppress(Exception):
+                    with _budget(INSPECT_BUDGET):
+                        has_x, has_y, cv = _marks(pred)
                 out.update(has_X=has_x, has_y=has_y, cv=cv)
                 with contextlib.suppress(Exception):
-                    out["n_nodes"] = len(__import__(
-                        "skrub._data_ops._evaluation", fromlist=["nodes"]).nodes(pred))
+                    with _budget(INSPECT_BUDGET):
+                        out["n_nodes"] = len(__import__(
+                            "skrub._data_ops._evaluation", fromlist=["nodes"]).nodes(pred))
                 with contextlib.suppress(Exception):
-                    out["param_grid"] = str(pred.skb.describe_param_grid()).strip()
+                    with _budget(INSPECT_BUDGET):
+                        out["param_grid"] = str(pred.skb.describe_param_grid()).strip()
                 with contextlib.suppress(Exception):
-                    out["steps"] = str(pred.skb.describe_steps()).strip()
+                    with _budget(INSPECT_BUDGET):
+                        out["steps"] = str(pred.skb.describe_steps()).strip()
         out.update(ok=True, stage="done")
     except SystemExit as exc:
         out.update(stage=out["stage"], error=f"the script called sys.exit({exc.code}) "

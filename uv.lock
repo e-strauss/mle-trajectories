@@ -807,7 +807,7 @@ requires-dist = [
     { name = "lightgbm", specifier = ">=4.7.0" },
     { name = "litellm", specifier = ">=1.97.0" },
     { name = "skorch", specifier = ">=1.4.0" },
-    { name = "stratum-ai", git = "https://github.com/deem-data/stratum.git" },
+    { name = "stratum-ai", git = "https://github.com/deem-data/stratum.git?rev=8af6257e5eeb68b84a527f0bf0c1a32c808a3a66" },
     { name = "tenacity", specifier = ">=8.0" },
     { name = "torch", specifier = ">=2.13.0" },
     { name = "xgboost", specifier = ">=3.3.0" },
@@ -1719,8 +1719,8 @@ wheels = [
 
 [[package]]
 name = "stratum-ai"
-version = "0.0.0.dev0"
-source = { git = "https://github.com/deem-data/stratum.git#a8977159c6e6f165f8ced90ba5926c8928ea8bbe" }
+version = "0.0.0.dev2"
+source = { git = "https://github.com/deem-data/stratum.git?rev=8af6257e5eeb68b84a527f0bf0c1a32c808a3a66#8af6257e5eeb68b84a527f0bf0c1a32c808a3a66" }
 dependencies = [
     { name = "duckdb" },
     { name = "graphviz" },

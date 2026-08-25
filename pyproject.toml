@@ -27,4 +27,4 @@ build-backend = "hatchling.build"
 packages = ["tools/pipeline_analyzer", "tools/skrubify"]
 
 [tool.uv.sources]
-stratum-ai = { git = "https://github.com/deem-data/stratum.git" }
+stratum-ai = { git = "https://github.com/deem-data/stratum.git", rev = "8af6257e5eeb68b84a527f0bf0c1a32c808a3a66" }

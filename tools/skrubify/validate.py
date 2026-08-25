@@ -32,6 +32,17 @@ class Validation:
     missing_module: str | None = None     # dependency gap, NOT a bug in the candidate
 
     @property
+    def build_timed_out(self) -> bool:
+        """The build ran out of clock -- inconclusive, NOT a defect to repair.
+
+        A 100+ node plan can legitimately take minutes to record. Asking the LLM
+        to "fix" a timeout burns a repair round and usually makes the candidate
+        worse, so callers should retry with more time instead.
+        """
+        return bool(self.build_error
+                    and self.build_error.startswith("building the plan timed out"))
+
+    @property
     def ok(self) -> bool:
         return self.checks.ok and self.build_ok is not False and not self.structural
 
@@ -91,7 +102,7 @@ class Validation:
         return " · ".join(bits)
 
 
-def build_plan(path: Path, python: str | None = None, timeout: int = 120) -> tuple[bool, str | None, dict]:
+def build_plan(path: Path, python: str | None = None, timeout: int = 300) -> tuple[bool, str | None, dict]:
     """Import ``path`` in a subprocess and return (ok, error, info)."""
     cmd = [python or sys.executable, str(CHILD), str(path)]
     try:
@@ -112,7 +123,7 @@ def build_plan(path: Path, python: str | None = None, timeout: int = 120) -> tup
 
 
 def validate(path: Path, *, python: str | None = None, strict: bool = False,
-             build: bool = True, timeout: int = 120) -> Validation:
+             build: bool = True, timeout: int = 300) -> Validation:
     source = Path(path).read_text()
     checks = run_checks(source, strict=strict)
     if not build:

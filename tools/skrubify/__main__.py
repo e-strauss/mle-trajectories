@@ -69,8 +69,8 @@ def _add_args(ap: argparse.ArgumentParser) -> None:
                    help="interpreter used to build the plan (default: this one)")
     g.add_argument("--keep-attempts", action="store_true",
                    help="also write each attempt to <stem>.attemptN.py")
-    g.add_argument("--build-timeout", type=int, default=120,
-                   help="seconds allowed for one plan build (default 120)")
+    g.add_argument("--build-timeout", type=int, default=300,
+                   help="seconds allowed for one plan build (default 300; a timeout is retried at 3x before counting as a failure)")
 
     g = ap.add_argument_group("run (needs the dataset)")
     g.add_argument("--run-in", type=Path, default=None, metavar="DIR",

@@ -100,10 +100,6 @@ RULES: tuple[Rule, ...] = (
          "(add .skb.subsample(n=...) for cheap previews)."),
     Rule("makedirs", "forbid", r"\bos\.makedirs\s*\(",
          "no output directories are needed.", WARNING),
-    Rule("early-stopping", "forbid", r"\b(early_stopping_rounds|eval_set)\s*=",
-         "at plan level there is no eval set to hand the booster -- drop early "
-         "stopping, or keep it inside a wrapper estimator that makes its own "
-         "inner validation split in fit().", ERROR, "toplevel"),
 
     # --- guide pitfalls ------------------------------------------------------
     Rule("apply-plain-func", "forbid",
@@ -203,6 +199,37 @@ def mask_functions(source: str) -> str:
                     keep[row] = False
     return "".join(l if keep[i + 1] else "\n" * l.count("\n")
                    for i, l in enumerate(lines))
+
+
+def mask_method_kwargs(source: str) -> str:
+    """Blank the contents of ``fit_kwargs=``-style dicts, preserving line numbers.
+
+    ``.skb.apply(..., fit_kwargs={"eval_set": [(X_val, y_val)], ...})`` is the
+    SANCTIONED way to early-stop inside a plan (guide section 7): the eval set is
+    carved out of the fold's own training rows by a ``how="no_wrap"`` transformer
+    and handed to ``fit`` as DataOps. Without this mask the early-stopping rule
+    fires on the very pattern the contract now requires, and the repair rounds
+    fight the instruction instead of the defect.
+    """
+    keys = ("fit_kwargs", "fit_transform_kwargs", "transform_kwargs",
+            "predict_kwargs", "predict_proba_kwargs", "decision_function_kwargs",
+            "score_kwargs")
+    out = list(source)
+    for key in keys:
+        for m in re.finditer(rf"\b{key}\s*=\s*\{{", source):
+            depth, i = 0, m.end() - 1
+            while i < len(source):
+                if source[i] == "{":
+                    depth += 1
+                elif source[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+            for j in range(m.start(), min(i + 1, len(source))):
+                if out[j] != "\n":
+                    out[j] = " "
+    return "".join(out)
 
 
 def _complement(source: str, masked: str) -> str:
@@ -324,6 +351,53 @@ def _udf_check(source: str) -> list[tuple[str, str]]:
     return out
 
 
+def _early_stopping_check(source: str) -> list[tuple[str, str]]:
+    """`early_stopping_rounds=` / `eval_set=` on a booster applied in the plan.
+
+    Only a BARE booster is a defect. Three spellings are legitimate and must not
+    be flagged, which is why this is an AST check and not a regex -- the regex
+    version misfired on all three:
+
+    * ``fit_kwargs={"eval_set": [(X_val, y_val)]}`` -- the sanctioned form
+      (guide section 7); inside a dict the token is followed by ``:``, not ``=``.
+    * ``MyWrapper(early_stopping_rounds=50, validation_size=0.2)`` where
+      ``MyWrapper`` is a class defined in this same file -- passing the patience
+      into a wrapper that early-stops on its own inner split is exactly what the
+      contract asks for.
+    * anything inside a ``def``/``class`` body -- ordinary per-fit Python.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+
+    local_classes = {n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
+    inner: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for row in range(node.lineno, (node.end_lineno or node.lineno) + 1):
+                inner.add(row)
+
+    out: list[tuple[str, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or node.lineno in inner:
+            continue
+        callee = node.func.id if isinstance(node.func, ast.Name) else (
+            node.func.attr if isinstance(node.func, ast.Attribute) else "")
+        if callee in local_classes:
+            continue                     # a wrapper defined here: legitimate
+        for kw in node.keywords:
+            if kw.arg in ("early_stopping_rounds", "eval_set"):
+                out.append((ERROR, f"line {kw.value.lineno}: {kw.arg}= on "
+                            f"{callee or 'a booster'} applied directly in the plan, "
+                            "which has no eval set. Pass it through "
+                            '`fit_kwargs={"eval_set": [(X_val, y_val)]}` fed by a '
+                            '`how="no_wrap"` GetXY transformer (guide section 7), or '
+                            "move the model into a wrapper estimator that makes its "
+                            "own inner split in fit(). Do NOT delete early stopping."))
+    return out
+
+
 def _transformer_output_check(source: str) -> list[tuple[str, str]]:
     """A custom transformer that hands back numpy instead of a pandas container.
 
@@ -401,6 +475,7 @@ def _arg_checks(source: str) -> list[tuple[str, str]]:
     out += _target_transform_check(source)
     out += _udf_check(source)
     out += _transformer_output_check(source)
+    out += _early_stopping_check(source)
 
     for lineno, args in _calls(source, ".skb.concat"):
         if args.strip() and not args.lstrip().startswith("["):
@@ -438,8 +513,11 @@ def strip_noncode(source: str) -> str:
 
 def run_checks(source: str, *, strict: bool = False) -> CheckReport:
     source = strip_noncode(source)
+    toplevel = mask_functions(source)
     regions = {"all": source, "plan": plan_block(source),
-               "toplevel": mask_functions(source)}
+               "toplevel": toplevel,
+               # early stopping declared via fit_kwargs is legitimate (section 7)
+               "toplevel-no-kwargs": mask_method_kwargs(toplevel)}
     errors: list[str] = []
     warnings: list[str] = []
     for rule in RULES:
