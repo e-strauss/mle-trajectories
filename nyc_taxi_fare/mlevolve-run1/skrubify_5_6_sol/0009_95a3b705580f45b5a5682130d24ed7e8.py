@@ -33,7 +33,7 @@ class GetXY(TransformerMixin, BaseEstimator):
 
     def transform(self, X):
         # Prediction mode has no target and needs only the feature matrix.
-        return {"X": X}
+        return {"X": X, "X_val": None, "y": None, "y_val": None}
 
 
 def restore_raw_target_domain(prediction, mode):
