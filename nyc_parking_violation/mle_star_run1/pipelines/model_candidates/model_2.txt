@@ -1,0 +1,18 @@
+## Model name
+XGBoost Poisson Regressor
+
+## Example Python code
+import xgboost as xgb
+import pandas as pd
+
+# Assume X_train, y_train, X_test are pre-processed pandas DataFrames
+
+# Initialize the XGBoost model with the Poisson objective
+xgbr = xgb.XGBRegressor(objective='count:poisson', random_state=42)
+
+# Train the model
+xgbr.fit(X_train, y_train)
+
+# Generate predictions
+# Predictions from the Poisson objective are inherently non-negative
+predictions = xgbr.predict(X_test)

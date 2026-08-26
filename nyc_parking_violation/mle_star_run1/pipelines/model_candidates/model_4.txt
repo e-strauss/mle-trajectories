@@ -1,0 +1,18 @@
+## Model name
+Scikit-learn HistGradientBoostingRegressor (Poisson)
+
+## Example Python code
+from sklearn.ensemble import HistGradientBoostingRegressor
+import pandas as pd
+
+# Assume X_train, y_train, X_test are pre-processed pandas DataFrames
+# This model requires categorical features to be integer-encoded.
+
+# Initialize the model with Poisson loss for count data
+hgb_poisson = HistGradientBoostingRegressor(loss='poisson', random_state=42)
+
+# Train the model (y_train must be non-negative)
+hgb_poisson.fit(X_train, y_train)
+
+# Generate predictions (inherently non-negative)
+predictions = hgb_poisson.predict(X_test)

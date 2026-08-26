@@ -1,0 +1,20 @@
+## Model name
+LightGBM Regressor
+
+## Example Python code
+import lightgbm as lgb
+import pandas as pd
+
+# Assume X_train, y_train, X_test are pre-processed pandas DataFrames
+
+# Initialize the LightGBM model for regression
+lgbm = lgb.LGBMRegressor(random_state=42)
+
+# Train the model
+lgbm.fit(X_train, y_train)
+
+# Generate predictions
+predictions = lgbm.predict(X_test)
+
+# Ensure predictions are non-negative for count data
+predictions[predictions < 0] = 0

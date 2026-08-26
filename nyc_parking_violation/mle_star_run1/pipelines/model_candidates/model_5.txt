@@ -1,0 +1,18 @@
+## Model name
+Scikit-learn Random Forest Regressor (Poisson)
+
+## Example Python code
+from sklearn.ensemble import RandomForestRegressor
+import pandas as pd
+
+# Assume X_train, y_train, X_test are pre-processed pandas DataFrames
+# and categorical features are one-hot encoded.
+
+# Initialize the model with the Poisson criterion for splits
+rf_poisson = RandomForestRegressor(n_estimators=100, criterion='poisson', random_state=42, n_jobs=-1)
+
+# Train the model
+rf_poisson.fit(X_train, y_train)
+
+# Generate predictions
+predictions = rf_poisson.predict(X_test)
