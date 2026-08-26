@@ -148,11 +148,11 @@ def _pipeline_section(node, diff: DagDiff | None, lineage: Lineage):
     head = f"""
 <h2 id="{anchor}">{esc(node.name)}</h2>
 <div class="meta">
-  <div><span class="score">{score}</span> {_delta_span(delta)} <span class="pill">{esc(node.metric or 'score')}</span></div>
+  <div><span class="score">{score}</span> {_delta_span(delta)} <span class="pill">{esc(node.phase or node.metric or 'score')}</span></div>
   <div class="muted">parent: {parent_link}</div>
   {f'<div class="muted">{node.duration_s:.0f}s</div>' if node.duration_s else ''}
 </div>
-<p class="sub">{esc(p.description or '')}</p>
+<p class="sub">{esc(node.description or '')}</p>
 """
     if not p.ok:
         return head + f'<div class="card err">Could not extract DAG — {esc((p.error or "").splitlines()[0])}</div>'

@@ -12,6 +12,7 @@ input dataset present and never touches the 4M-row table.
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import sys
 import traceback
 from dataclasses import dataclass
@@ -49,12 +50,29 @@ class Pipeline:
         return self.dag is not None
 
 
-def _fresh_import(module_name: str, pipe_dir: Path):
-    if str(pipe_dir) not in sys.path:
-        sys.path.insert(0, str(pipe_dir))
+def _fresh_import(module_name: str, path: Path):
+    """Import ``path`` under ``module_name``, ignoring anything cached.
+
+    Loaded from the explicit file path (not by name off ``sys.path``) so pipelines
+    living in different folders can share a stem without shadowing each other; the
+    folder still goes on ``sys.path`` because a pipeline may import its workspace
+    siblings (``common``, ``features``, ``nn``).
+    """
+    pipe_dir = str(path.parent)
+    if pipe_dir not in sys.path:
+        sys.path.insert(0, pipe_dir)
     for m in (module_name, *_WORKSPACE_MODULES):
         sys.modules.pop(m, None)
-    return importlib.import_module(module_name)
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.modules.pop(module_name, None)
+    return mod
 
 
 def load_pipeline(module_name: str, pipe_dir: Path, *, unroll_choices: bool = False) -> Pipeline:
@@ -66,7 +84,7 @@ def load_pipeline(module_name: str, pipe_dir: Path, *, unroll_choices: bool = Fa
     path = pipe_dir / f"{module_name}.py"
     try:
         with skrub.config_context(eager_data_ops=False):
-            mod = _fresh_import(module_name, pipe_dir)
+            mod = _fresh_import(module_name, path)
             pred = getattr(mod, "pred", None)
             if pred is None:
                 raise AttributeError(f"{module_name} defines no module-level `pred`")
@@ -135,11 +153,38 @@ def _safe_module_attr(module_name, pipe_dir, attr):
     return val.strip("\"'")
 
 
-def discover(pipe_dir: Path) -> list[str]:
-    """Sorted ``pipeline_*`` module names present in ``pipe_dir``."""
-    return sorted(p.stem for p in pipe_dir.glob("pipeline_*.py"))
+def discover(pipe_dir: Path, pattern: str = "pipeline_*.py") -> list[str]:
+    """Sorted module names matching ``pattern`` in ``pipe_dir``."""
+    return sorted(p.stem for p in pipe_dir.glob(pattern))
 
 
-def load_all(pipe_dir: Path, *, unroll_choices: bool = False) -> list[Pipeline]:
-    return [load_pipeline(name, pipe_dir, unroll_choices=unroll_choices)
-            for name in discover(pipe_dir)]
+def resolve(dirs: list[Path], names: list[str]) -> list[tuple[str, Path]]:
+    """Pair each requested module name with the first folder that holds it.
+
+    Names with no file anywhere in ``dirs`` are dropped -- a trajectory routinely
+    names more steps than were skrubified.
+    """
+    out = []
+    for name in names:
+        for d in dirs:
+            if (d / f"{name}.py").is_file():
+                out.append((name, d))
+                break
+    return out
+
+
+def load_all(pipe_dir, *, names: list[str] | None = None,
+             unroll_choices: bool = False) -> list[Pipeline]:
+    """Load pipelines from one folder or several.
+
+    ``names`` restricts (and orders) what is loaded -- used when a trajectory
+    supplies the module list; otherwise every ``pipeline_*.py`` in each folder is
+    picked up.
+    """
+    dirs = [pipe_dir] if isinstance(pipe_dir, Path) else list(pipe_dir)
+    if names is not None:
+        pairs = resolve(dirs, names)
+    else:
+        pairs = [(name, d) for d in dirs for name in discover(d)]
+    return [load_pipeline(name, d, unroll_choices=unroll_choices)
+            for name, d in pairs]

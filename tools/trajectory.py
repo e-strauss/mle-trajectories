@@ -5,166 +5,35 @@ Usage:
     python tools/trajectory.py path/to/final_state.json
     python tools/trajectory.py path/to/final_state.json --type mle-star
     python tools/trajectory.py path/to/final_state.json --no-color --sort time
+    python tools/trajectory.py path/to/final_state.json --modules
 
-Extending to a new run format:
-    1. Write a parser function `parse_<type>(state: dict) -> Trajectory`.
-    2. Register it in the PARSERS dict at the bottom.
-    That's it -- the renderer is format-agnostic and works off the Trajectory.
+The trajectory *parsers* live in ``pipeline_analyzer/trajectory.py`` (shared with
+the pipeline analyzer, which builds pipeline lineage from the same steps); this
+file is the renderer and CLI. To support a new run format, add a parser there.
 """
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
-import re
 import sys
-from dataclasses import dataclass, field
-from typing import Callable
+from pathlib import Path
 
 
-# --------------------------------------------------------------------------- #
-# Data model shared by every parser
-# --------------------------------------------------------------------------- #
-@dataclass
-class Step:
-    """One executed piece of code in the trajectory."""
-    order: tuple          # sort key giving chronological order
-    phase: str            # e.g. "Init", "Ablation", "Improve"
-    ident: str            # human label for which step, e.g. "step3 plan4"
-    score: float | None
-    time_s: float | None
-    returncode: int | None
-    note: str = ""        # freeform extra (e.g. ablation summary / error hint)
+def _load_parsers():
+    """Import the parser module by path, so this stays a dependency-free script
+    (importing the ``pipeline_analyzer`` package would pull in skrub/stratum)."""
+    path = Path(__file__).resolve().parent / "pipeline_analyzer" / "trajectory.py"
+    spec = importlib.util.spec_from_file_location("_mle_trajectory", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod          # dataclasses resolves annotations via sys.modules
+    spec.loader.exec_module(mod)
+    return mod
 
 
-@dataclass
-class Trajectory:
-    meta: dict = field(default_factory=dict)   # ordered key -> value for header
-    steps: list[Step] = field(default_factory=list)
-    lower_is_better: bool = False               # metric orientation
-
-    def best_step(self) -> Step | None:
-        scored = [s for s in self.steps if s.score is not None]
-        if not scored:
-            return None
-        return (min if self.lower_is_better else max)(scored, key=lambda s: s.score)
-
-
-# --------------------------------------------------------------------------- #
-# MLE-STAR parser
-# --------------------------------------------------------------------------- #
-# The final_state.json is a flat dict whose keys encode the trajectory via
-# numeric suffixes. We recognise the execution records (dicts carrying
-# `execution_time`/`returncode`) and slot each into an ordered phase.
-#
-# Phase layout (chronological):
-#   Init      init_code_exec_result_{sol}_{cand}
-#   Merge     merger_code_exec_result_{sol}_{round}
-#   ... outer refine loop, per step s ...
-#     Base    train_code_exec_result_{s}_{sol}
-#     Ablate  ablation_code_exec_result_{s}_{sol}
-#     Improve train_code_improve_exec_result_{plan}_{s}_{sol}
-#   Ensemble  ensemble_code_exec_result_{round}
-#   Submit    submission_code_exec_result
-
-_PATTERNS: list[tuple[re.Pattern, Callable]] = []
-
-
-def _pat(regex: str):
-    def deco(fn):
-        _PATTERNS.append((re.compile(regex + r"$"), fn))
-        return fn
-    return deco
-
-
-@_pat(r"init_code_exec_result_(\d+)_(\d+)")
-def _init(sol, cand):
-    return (0, 0, 0, int(cand)), "Init", f"sol{sol} cand{cand}"
-
-
-@_pat(r"merger_code_exec_result_(\d+)_(\d+)")
-def _merge(sol, rnd):
-    return (0, 1, 0, int(rnd)), "Merge", f"sol{sol} round{rnd}"
-
-
-@_pat(r"train_code_exec_result_(\d+)_(\d+)")
-def _base(step, sol):
-    # base/accepted solution at the start of refine step `step`
-    return (1, int(step), 0, 0), "Base", f"step{step}"
-
-
-@_pat(r"ablation_code_exec_result_(\d+)_(\d+)")
-def _ablation(step, sol):
-    return (1, int(step), 1, 0), "Ablation", f"step{step}"
-
-
-@_pat(r"train_code_improve_exec_result_(\d+)_(\d+)_(\d+)")
-def _improve(plan, step, sol):
-    return (1, int(step), 2, int(plan)), "Improve", f"step{step} plan{plan}"
-
-
-@_pat(r"ensemble_code_exec_result_(\d+)")
-def _ensemble(rnd):
-    return (2, 0, 0, int(rnd)), "Ensemble", f"round{rnd}"
-
-
-@_pat(r"submission_code_exec_result")
-def _submission():
-    return (3, 0, 0, 0), "Submit", "final"
-
-
-_META_KEYS = [
-    ("task_name", "task"),
-    ("task_type", "task type"),
-    ("agent_model", "agent model"),
-    ("seed", "seed"),
-    ("num_solutions", "num solutions"),
-    ("num_model_candidates", "model candidates"),
-    ("num_top_plans", "top plans / step"),
-    ("outer_loop_round", "outer rounds"),
-    ("inner_loop_round", "inner rounds"),
-    ("ensemble_loop_round", "ensemble rounds"),
-    ("max_debug_round", "max debug rounds"),
-    ("exec_timeout", "exec timeout (s)"),
-    ("workspace_dir", "workspace"),
-]
-
-
-def parse_mle_star(state: dict) -> Trajectory:
-    traj = Trajectory(lower_is_better=bool(state.get("lower", False)))
-
-    for key, label in _META_KEYS:
-        if key in state:
-            traj.meta[label] = state[key]
-
-    for key, value in state.items():
-        if not (isinstance(value, dict) and
-                ("execution_time" in value or "returncode" in value)):
-            continue
-        for pattern, fn in _PATTERNS:
-            m = pattern.match(key)
-            if not m:
-                continue
-            order, phase, ident = fn(*m.groups())
-            note = ""
-            if value.get("score") is None and "ablation_result" in value:
-                # ablation runs report a text result rather than a score
-                first = (value["ablation_result"] or "").strip().splitlines()
-                note = first[0][:60] if first else "ablation study"
-            elif value.get("returncode") not in (0, None):
-                note = "FAILED"
-            traj.steps.append(Step(
-                order=order,
-                phase=phase,
-                ident=ident,
-                score=value.get("score"),
-                time_s=value.get("execution_time"),
-                returncode=value.get("returncode"),
-                note=note,
-            ))
-            break
-
-    traj.steps.sort(key=lambda s: s.order)
-    return traj
+_traj = _load_parsers()
+PARSERS = _traj.PARSERS
+Step, Trajectory = _traj.Step, _traj.Trajectory
 
 
 # --------------------------------------------------------------------------- #
@@ -202,7 +71,7 @@ def render(traj: Trajectory, path: str, sort: str = "order") -> str:
     rule = "-" * width
 
     title = str(traj.meta.get("task", "trajectory"))
-    ttype = traj.meta.get("task type", "")
+    ttype = traj.meta.get("task type", "") or traj.meta.get("format", "")
     out.append(f"{C.BOLD}{C.CYAN}{bar}{C.RESET}")
     header = f" MLE trajectory  —  {title}"
     if ttype:
@@ -277,28 +146,37 @@ def render(traj: Trajectory, path: str, sort: str = "order") -> str:
         out.append(
             f"{marker}{i:>3}  {C.CYAN}{s.phase:<10}{C.RESET} {s.ident:<16} "
             f"{pad}{score_str}  {_fmt_time(s.time_s):>7}  "
-            f"{rc_col}{str(s.returncode):>2}{C.RESET}  {note}"
+            f"{rc_col}{('-' if s.returncode is None else s.returncode):>2}{C.RESET}  {note}"
         )
     out.append(f"{C.BOLD}{C.CYAN}{bar}{C.RESET}")
     return "\n".join(out)
 
 
 # --------------------------------------------------------------------------- #
-# Registry + CLI
+# CLI
 # --------------------------------------------------------------------------- #
-PARSERS: dict[str, Callable[[dict], Trajectory]] = {
-    "mle-star": parse_mle_star,
-}
+def render_modules(traj: Trajectory) -> str:
+    """The module/parent view: how each executed step maps onto an exported file
+    and what it was derived from. This is what the pipeline analyzer consumes."""
+    mods = [s for s in traj.steps if s.module]
+    w = max((len(s.module) for s in mods), default=6)
+    out = [f" {C.BOLD}{'MODULE':<{w}} {'PARENT':<{w}} {'PHASE':<10} {'SCORE':>9}{C.RESET}"]
+    for s in mods:
+        out.append(f" {s.module:<{w}} {C.DIM}{str(s.parent or '—'):<{w}}{C.RESET} "
+                   f"{C.CYAN}{s.phase:<10}{C.RESET} {_fmt_score(s.score):>9}")
+    return "\n".join(out)
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description="Tabular overview of an MLE development trajectory.")
     ap.add_argument("json_path", help="path to the trajectory json (e.g. final_state.json)")
-    ap.add_argument("--type", default="mle-star", choices=sorted(PARSERS),
-                    help="trajectory format (default: mle-star)")
+    ap.add_argument("--type", default="auto", choices=["auto", *sorted(PARSERS)],
+                    help="trajectory format (default: detect from the file)")
     ap.add_argument("--sort", default="order", choices=("order", "time", "score"),
                     help="row ordering (default: chronological order)")
+    ap.add_argument("--modules", action="store_true",
+                    help="also print the exported-module / parent mapping")
     ap.add_argument("--no-color", action="store_true", help="disable ANSI colour")
     args = ap.parse_args(argv)
 
@@ -312,11 +190,19 @@ def main(argv=None) -> int:
         print(f"error: could not read {args.json_path}: {exc}", file=sys.stderr)
         return 2
 
-    traj = PARSERS[args.type](state)
+    path = Path(args.json_path)
+    try:
+        traj = _traj.parse(state, path.resolve().parent, args.type)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     if not traj.steps:
         print(f"warning: no trajectory steps recognised in {args.json_path} "
               f"(type={args.type})", file=sys.stderr)
     print(render(traj, args.json_path, sort=args.sort))
+    if args.modules:
+        print()
+        print(render_modules(traj))
     return 0
 
 
