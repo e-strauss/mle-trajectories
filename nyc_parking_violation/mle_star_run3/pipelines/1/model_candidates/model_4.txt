@@ -1,0 +1,40 @@
+## Model name
+Temporal Fusion Transformer (TFT)
+
+## Example Python code
+import pandas as pd
+import lightning.pytorch as pl
+from pytorch_forecasting import TimeSeriesDataSet, TemporalFusionTransformer
+from pytorch_forecasting.data import GroupNormalizer
+
+# Assume 'data' is a DataFrame with specific columns for TFT
+# data['time_idx'] = (data['date'] - data['date'].min()).dt.days
+# data['series'] = data.groupby(['street_name', 'violation_type']).ngroup()
+
+max_prediction_length = 30
+max_encoder_length = 90
+training_cutoff = data["time_idx"].max() - max_prediction_length
+
+# Create the TimeSeriesDataSet object. [5, 9]
+training_data = TimeSeriesDataSet(
+    data[lambda x: x.time_idx <= training_cutoff],
+    time_idx="time_idx",
+    target="violation_count",
+    group_ids=["series"],
+    max_encoder_length=max_encoder_length,
+    max_prediction_length=max_prediction_length,
+    static_categoricals=["series"], # street_name, violation_type can be static
+    time_varying_known_reals=["day_of_week", "month"], # Features known in the future
+    time_varying_unknown_reals=["violation_count"], # Target
+    target_normalizer=GroupNormalizer(groups=["series"], transformation="softplus"),
+)
+
+# Create dataloaders
+train_dataloader = training_data.to_dataloader(train=True, batch_size=64)
+
+# Initialize and train the TFT model
+trainer = pl.Trainer(max_epochs=5, accelerator="cpu", gradient_clip_val=0.1)
+tft = TemporalFusionTransformer.from_dataset(training_data, learning_rate=0.03, hidden_size=16)
+
+trainer.fit(tft, train_dataloaders=train_dataloader)
+# Note: Full evaluation requires a validation dataloader and prediction setup
