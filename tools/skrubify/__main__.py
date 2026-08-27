@@ -1,10 +1,10 @@
 """CLI: turn a plain sklearn/pandas ML script into a skrub DataOps pipeline.
 
-    # convert (writes <dir>/skrubify/<name>.py next to the source)
-    python -m skrubify path/to/train0.py --provider openai --model gpt-5
+    # convert (writes <run>/skrubify/<name>.py beside the run's pipelines/ dir)
+    python -m skrubify <run>/pipelines/train0.py --provider openai --model gpt-5
 
     # validate an existing pipeline -- no LLM, no dataset, no API key
-    python -m skrubify --check tab_playground_dec_21/mle_star-run1/skrubify/init1.py
+    python -m skrubify --check tab_playground_dec_21/mle_star_run_1/skrubify/init1.py
 
     # see exactly what would be sent
     python -m skrubify path/to/train0.py --print-prompt
@@ -155,15 +155,23 @@ def _run_and_compare(pipeline: Path, source: Path | None, args) -> int:
 def _find_source(pipeline: Path) -> Path | None:
     """Locate the original a generated pipeline was translated from.
 
-    Generated files keep the source's basename, so look for that name in the
-    layouts we actually use: a sibling of the output folder (mle_star runs put
-    originals next to `skrubify_<provider>/`) or a `pipelines/` folder beside it
-    (mlevolve runs).
+    Generated files keep the source's basename. A run keeps its originals in
+    `<run>/pipelines/` and each conversion in a sibling `<run>/skrubify*/` that
+    mirrors any sub-path, so look there first (`skrubify_openai/ensemble/e0.py`
+    -> `pipelines/ensemble/e0.py`), then fall back to the flat layouts older runs
+    used: a sibling of the output folder, or a `pipelines/` folder beside it.
     """
     name, out_dir = pipeline.name, pipeline.parent
-    for cand in (out_dir.parent / name,
-                 out_dir.parent / "pipelines" / name,
-                 out_dir.parent.parent / name):
+    cands = []
+    for anc in (out_dir, *out_dir.parents):
+        if anc.name.startswith("skrubify"):
+            root, sub = anc.parent, out_dir.relative_to(anc)
+            cands += [root / "pipelines" / sub / name, root / sub / name]
+            break
+    cands += [out_dir.parent / name,
+              out_dir.parent / "pipelines" / name,
+              out_dir.parent.parent / name]
+    for cand in cands:
         if cand.is_file() and cand.resolve() != pipeline.resolve():
             return cand
     return None

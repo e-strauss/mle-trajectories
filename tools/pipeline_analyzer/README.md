@@ -9,13 +9,26 @@ hyperparameters).
 
 ## Run
 
+A run directory is laid out `<dataset>/<agent>_run_<n>/`, holding
+
+- `pipelines/` — the agent's **original** scripts, exactly as it wrote them
+  (sub-folders such as `ensemble/` kept as-is),
+- the state dump / journal (`final_state.json`, `journal_slim.json`, …) *beside*
+  `pipelines/`, not inside it,
+- one `skrubify*/` folder per conversion run, mirroring `pipelines/`' sub-paths,
+- the generated report(s).
+
+`--pipelines` therefore defaults to `./pipelines` and points at whichever folder
+holds the *skrub* pipelines: the agent's own output for an agent that already
+writes DataOps plans, a `skrubify*/` folder otherwise.
+
 Two ways to get the lineage, depending on what the agent left behind.
 
 **A. The pipelines annotate themselves** (`PARENT`/`DESCRIPTION` in each file,
 scores in `results.json`) — the mle-claude style:
 
 ```bash
-# from tab_playground_dec_21/mle_claude-run1/
+# from tab_playground_dec_21/mle_claude_run_1/
 python -m pipeline_analyzer --pipelines pipelines --out pipeline_evolution.html --text
 ```
 
@@ -24,12 +37,12 @@ executed step with its score, and the steps were (hand-)skrubified into a folder
 of plain `.py` rewrites with no annotations. The format is detected from the file:
 
 ```bash
-# MLE-STAR — from tab_playground_dec_21/mle_star-run4/
+# MLE-STAR — from tab_playground_dec_21/mle_star_run_4/
 python -m pipeline_analyzer --trajectory final_state.json \
-    --pipelines skrubify_openai --pipelines ensemble/skrubify_openai \
+    --pipelines skrubify_openai --pipelines skrubify_openai/ensemble \
     --fold-identical-code --out pipeline_evolution_openai.html --text
 
-# mlevolve — from nyc_taxi_fare/mlevolve-run1/
+# mlevolve — from nyc_taxi_fare/mlevolve_run_1/
 python -m pipeline_analyzer --trajectory journal_slim.json \
     --pipelines skrubify_5_6_sol --out pipeline_evolution.html --text
 ```

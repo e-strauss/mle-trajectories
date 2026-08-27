@@ -8,7 +8,7 @@ Two ways to get the lineage:
     # an agent trajectory supplies parents + scores, the folder holds the
     # (hand-)skrubified rewrite of each step's code
     python -m pipeline_analyzer --trajectory final_state.json \
-        --pipelines skrubify_openai --pipelines ensemble/skrubify_openai
+        --pipelines skrubify_openai --pipelines skrubify_openai/ensemble
 
 ``--pipelines`` may be repeated; a trajectory step is matched to the first folder
 that holds ``<module>.py``. Steps that were never skrubified are reported and
@@ -131,6 +131,15 @@ def main(argv=None):
         pipelines = load_all(pipe_dirs, unroll_choices=args.unroll_choices)
         results = args.results or (pipe_dirs[0] / "results.json")
         lineage = build_lineage(pipelines, results_path=results)
+
+    if not pipelines:
+        hint = ""
+        sibs = [d.name for d in pipe_dirs[0].parent.glob("skrubify*") if d.is_dir()]
+        if pipe_dirs[0].name == "pipelines" and sibs:
+            hint = (f"\n  a run's pipelines/ folder holds the agent's ORIGINAL scripts; "
+                    f"point --pipelines at the skrubified plans instead "
+                    f"({', '.join(sibs)})")
+        ap.error(f"no pipelines loaded from {where}{hint}")
 
     ok = sum(1 for p in pipelines if p.ok)
     print(f"  {ok}/{len(pipelines)} extracted; "

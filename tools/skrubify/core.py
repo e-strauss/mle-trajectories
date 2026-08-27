@@ -67,8 +67,19 @@ class Result:
 
 
 def default_out_path(source: Path) -> Path:
-    """``<dir>/foo.py`` -> ``<dir>/skrubify/foo.py`` (the layout already in use)."""
+    """Where a conversion lands when ``-o`` is not given.
+
+    An agent run is laid out ``<dataset>/<agent>_run_<n>/`` with the untouched
+    originals in ``pipelines/`` and everything derived beside it, so a source
+    inside a ``pipelines/`` folder writes to a *sibling* ``skrubify/`` mirroring
+    its sub-path (``pipelines/ensemble/e0.py`` -> ``skrubify/ensemble/e0.py``)
+    rather than nesting generated files under the originals. Anywhere else:
+    ``<dir>/foo.py`` -> ``<dir>/skrubify/foo.py``.
+    """
     source = Path(source)
+    for parent in source.parents:
+        if parent.name == "pipelines":
+            return parent.parent / "skrubify" / source.relative_to(parent)
     return source.parent / "skrubify" / source.name
 
 
