@@ -4,7 +4,7 @@
     python -m skrubify <run>/pipelines/train0.py --provider openai --model gpt-5
 
     # validate an existing pipeline -- no LLM, no dataset, no API key
-    python -m skrubify --check tab_playground_dec_21/mle_star_run_1/skrubify/init1.py
+    python -m skrubify --check tools/skrubify/reference/init1.py
 
     # see exactly what would be sent
     python -m skrubify path/to/train0.py --print-prompt

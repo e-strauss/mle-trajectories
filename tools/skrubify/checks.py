@@ -62,11 +62,8 @@ RULES: tuple[Rule, ...] = (
          "wrap the whole plan construction in "
          "`with skrub.config_context(eager_data_ops=False):` so importing the file "
          "builds the graph without touching data."),
-    Rule("main-guard", "require",
-         r"""if\s+__name__\s*==\s*['"]__main__['"]\s*:""",
-         'the scoring block must be guarded by `if __name__ == "__main__":` so '
-         "importing the file builds the plan without reading data or fitting a "
-         "model."),
+    # main-guard is an AST check (_main_guard_check): a regex can neither accept a
+    # compound guard nor tell whether the scoring block is INSIDE it.
     Rule("no-argparse", "forbid", r"\bargparse\b|\badd_argument\s*\(",
          "the script takes no command-line arguments -- drop argparse entirely "
          "and guard the scoring block with `if __name__ == \"__main__\":`."),
@@ -92,12 +89,12 @@ RULES: tuple[Rule, ...] = (
          "by hand.", WARNING, "toplevel"),
     Rule("submission", "forbid", r"\.to_(csv|parquet)\s*\(",
          "writing predictions/intermediate tables is out of scope -- the deliverable "
-         "is a cross-validated score."),
-    Rule("test-csv", "forbid", r"""["']?[^"'\s]*test\.csv""",
+         "is a cross-validated score.", ERROR, "toplevel"),
+    Rule("test-csv", "forbid", r"""(?:^|["'/\\])test\.csv""",
          "the test set is not part of a scored plan; drop it.", WARNING),
     Rule("chunked-read", "forbid", r"\bchunksize\s*=",
          "a chunked read cannot be recorded as one node -- read the table once "
-         "(add .skb.subsample(n=...) for cheap previews)."),
+         "(add .skb.subsample(n=...) for cheap previews).", ERROR, "toplevel"),
     Rule("makedirs", "forbid", r"\bos\.makedirs\s*\(",
          "no output directories are needed.", WARNING),
 
@@ -105,7 +102,7 @@ RULES: tuple[Rule, ...] = (
     Rule("apply-plain-func", "forbid",
          r"\.skb\.apply\s*\(\s*(np\.|numpy\.|pd\.|pandas\.|lambda\b)",
          ".skb.apply is for scikit-learn estimators only; a plain function goes "
-         "through .skb.apply_func / skrub.deferred."),
+         "through .skb.apply_func / skrub.deferred.", ERROR, "toplevel"),
     Rule("sparse-ohe", "forbid",
          r"OneHotEncoder\s*\((?![^)]*sparse_output\s*=\s*False)[^)]*\)",
          "skrub works on dense data: pass sparse_output=False to OneHotEncoder.",
@@ -435,6 +432,64 @@ def _transformer_output_check(source: str) -> list[tuple[str, str]]:
     return out
 
 
+# Calls that RUN the cross-validation. Anything here executes on import unless it
+# sits under the __main__ guard.
+SCORING_CALLS = ("make_grid_search", "make_randomized_search", "cross_validate")
+
+
+def _main_guard_check(source: str) -> list[tuple[str, str]]:
+    """The scoring block must run only under `if __name__ == "__main__":`.
+
+    A regex cannot express this. The old string-presence rule was wrong in BOTH
+    directions: it rejected a legitimate compound guard
+    (`if __name__ == "__main__" and args.search:`), and -- worse -- it passed a
+    file carrying the guard somewhere while scoring at module level, which is the
+    exact thing the guard exists to prevent. Such a file fits models the moment the
+    validator imports it, surfacing as a build timeout or a missing-data traceback
+    instead of a contract error.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+
+    def is_main_test(node) -> bool:
+        """True if `__name__ == "__main__"` appears anywhere in the condition.
+
+        Walking the whole test accepts `and`/`or` compounds and either operand
+        order, while a bare `if args.search:` still does not match.
+        """
+        for cmp_ in (n for n in ast.walk(node) if isinstance(n, ast.Compare)):
+            sides = [cmp_.left, *cmp_.comparators]
+            names = {s.id for s in sides if isinstance(s, ast.Name)}
+            consts = {s.value for s in sides if isinstance(s, ast.Constant)}
+            if "__name__" in names and "__main__" in consts:
+                return True
+        return False
+
+    guarded: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If) and is_main_test(node.test):
+            for stmt in node.body:
+                guarded.update(n.lineno for n in ast.walk(stmt)
+                               if hasattr(n, "lineno"))
+
+    out: list[tuple[str, str]] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in SCORING_CALLS):
+            continue
+        if node.lineno in guarded:
+            continue
+        where = ("outside it" if guarded else
+                 "and the file has no such guard at all")
+        out.append((ERROR, f"line {node.lineno}: {node.func.attr}() runs at import "
+                    f"time -- it must sit inside `if __name__ == \"__main__\":` "
+                    f"({where}), so importing the file builds the plan without "
+                    "reading data or fitting a model."))
+    return out
+
+
 def _arg_checks(source: str) -> list[tuple[str, str]]:
     """(level, message) pairs from checks over parsed call arguments."""
     out: list[tuple[str, str]] = []
@@ -472,6 +527,7 @@ def _arg_checks(source: str) -> list[tuple[str, str]]:
         out.append((ERROR, "score the plan with `pred.skb.make_grid_search(n_jobs=1, "
                            "fitted=True, refit=False, scoring=...)`."))
 
+    out += _main_guard_check(source)
     out += _target_transform_check(source)
     out += _udf_check(source)
     out += _transformer_output_check(source)
