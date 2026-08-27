@@ -4,7 +4,7 @@ Turn a plain pandas/scikit-learn ML script into a **valid skrub DataOps
 pipeline**, with an LLM doing the translation and a validator gating the result.
 
 The conversion target is the hand-written style already in this repo
-(`tab_playground_dec_21/mle_star_run_1/skrubify/init1.py`): one self-contained
+(`tools/skrubify/reference/init1.py`): one self-contained
 file, taking no command-line arguments, that *builds* a plan when imported and
 cross-validates it when run directly (the scoring block sits behind
 `if __name__ == "__main__":`).
@@ -14,8 +14,8 @@ cross-validates it when run directly (the scoring block sits behind
 ```bash
 cd tools                       # the dir containing the skrubify/ package
 
-# convert one script -> tab_playground_dec_21/mle_star_run_1/skrubify/train0.py
-python -m skrubify ../tab_playground_dec_21/mle_star_run_1/pipelines/train0.py \
+# convert one script -> tab_playground_dec_21/mle_star/skrubify/train0.py
+python -m skrubify ../tab_playground_dec_21/mle_star/pipelines/train0.py \
        --provider openai --model gpt-5
 
 # batch, explicit output dir
@@ -24,10 +24,10 @@ python -m skrubify ../nyc_taxi_fare/mlevolve_run_1/pipelines/*.py \
        --provider gemini --model gemini-3.7-flash --json-report run.json
 
 # validate pipelines (no LLM, no API key, no dataset needed)
-python -m skrubify --check ../tab_playground_dec_21/mle_star_run_1/skrubify/init1.py
+python -m skrubify --check skrubify/reference/init1.py
 
 # convert, then RUN it and compare its score against the original's
-python -m skrubify ../tab_playground_dec_21/mle_star_run_4/pipelines/train0.py \
+python -m skrubify ../tab_playground_dec_21/mle_star/pipelines/train0.py \
        --provider openai --model gpt-5.6-sol \
        --run-in ../tab_playground_dec_21 --compare-source
 
@@ -132,7 +132,7 @@ their default).
 
 ## Verified against real data
 
-`mle_star_run_4/pipelines/train0.py` (RandomForest, 3-fold stratified CV, with the
+`mle_star/pipelines/train0.py` (RandomForest, 3-fold stratified CV, with the
 original's exclusion of classes holding fewer than `n_splits` samples) converted
 in one shot and scored **bit-identically** to the original on a 100k-row sample
 of the Dec-2021 playground data — `0.943480001188684` both ways, including the
@@ -157,7 +157,7 @@ estimator sizes and 2 feature sets would score 4 cells where the original scored
 3 — and discrete `choose_from([...])` only (`choose_float`/`choose_int`/
 `make_randomized_search` are rejected by the checks).
 
-Verified on `mle_star_run_4/pipelines/ablation_0.py` (baseline / `n_estimators=50` /
+Verified on `mle_star/pipelines/ablation_0.py` (baseline / `n_estimators=50` /
 no-`Soil_Type`), one shot, all three variants matching the original to 12
 decimals:
 
@@ -176,7 +176,7 @@ reformulation of `value_counts()` + `isin` + index-based `drop`.
 
 ## Sweep over a whole mle_star run (68 pipelines)
 
-Every script in `tab_playground_dec_21/mle_star_run_4/pipelines` — 65 top-level
+Every script in `tab_playground_dec_21/mle_star/pipelines` — 65 top-level
 plus 3 in `ensemble/` — converted with gpt-5.6-sol, validated, executed on a 100k-row
 sample and compared against the original. **68/68 pass `--check`** (plan builds,
 no rule errors; 2 carry an advisory warning for a splitter's internal fold loop).
@@ -241,7 +241,7 @@ Running 22 real scripts surfaced three things no smaller test did:
 
 ## Observed behaviour (gpt-5.5 / gpt-5.6-sol, real runs)
 
-- `mle_star_run_1/pipelines/train0_1.py` (LightGBM+XGBoost soft-vote with per-fold
+- `train0_1.py` from a since-removed misconfigured run (LightGBM+XGBoost soft-vote, per-fold
   dummy-class augmentation) — one shot, 0 errors, ~20k tokens. The augmentation
   and the probability averaging moved into a `ClassifierMixin, BaseEstimator`
   wrapper (the only leakage-free place for per-fold logic), the raw 1-7 target
@@ -251,7 +251,7 @@ Running 22 real scripts surfaced three things no smaller test did:
   target encoding, LightGBM/XGBoost/CatBoost + a torch ResNet with focal loss,
   weight optimisation) — a ~100-node plan that builds, in one shot once the rule
   scoping above was in place, in two with an early over-strict version.
-- `mle_star_run_4/pipelines/train0_1.py` (two forests, different per-fold training sets,
+- `mle_star/pipelines/train0_1.py` (two forests, different per-fold training sets,
   pooled out-of-fold soft vote) — one shot. It solved the "model 2 also trains on
   the rare-class rows" requirement with a custom `BaseCrossValidator` that
   appends those rows to every fold's train partition and never to validation,

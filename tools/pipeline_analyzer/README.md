@@ -37,7 +37,7 @@ executed step with its score, and the steps were (hand-)skrubified into a folder
 of plain `.py` rewrites with no annotations. The format is detected from the file:
 
 ```bash
-# MLE-STAR — from tab_playground_dec_21/mle_star_run_4/
+# MLE-STAR — from tab_playground_dec_21/mle_star/
 python -m pipeline_analyzer --trajectory final_state.json \
     --pipelines skrubify_openai --pipelines skrubify_openai/ensemble \
     --fold-identical-code --out pipeline_evolution_openai.html --text
