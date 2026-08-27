@@ -1,0 +1,30 @@
+## Model name
+CatBoost Classifier
+
+## Example Python code
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from catboost import CatBoostClassifier
+from sklearn.metrics import f1_score
+
+# Generate dummy data
+X = pd.DataFrame(np.random.rand(1000, 10), columns=[f'feature_{i}' for i in range(10)])
+y = pd.Series(np.random.randint(0, 2, 1000))
+
+# Split data (in a real competition, this would be a time-based split)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+# Initialize and train CatBoost Classifier
+# CatBoost handles categorical features automatically if specified via 'cat_features'
+# For simplicity, we assume all features are numerical here, but it's a key advantage.
+model = CatBoostClassifier(iterations=500, learning_rate=0.05, random_seed=42, 
+                           loss_function='Logloss', eval_metric='F1', verbose=False)
+model.fit(X_train, y_train)
+
+# Make predictions
+y_pred = model.predict(X_test)
+
+# Evaluate with Macro F1 Score
+macro_f1 = f1_score(y_test, y_pred, average='macro')
+print(f"CatBoost Macro F1 Score: {macro_f1:.4f}")

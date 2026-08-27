@@ -1,0 +1,34 @@
+## Model name
+CatBoost Classifier
+
+## Example Python code
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from catboost import CatBoostClassifier
+from sklearn.metrics import f1_score
+import numpy as np
+
+# Simulate data (replace with your actual data loading and preprocessing)
+np.random.seed(42)
+X = pd.DataFrame(np.random.rand(1000, 10), columns=[f'feature_{i}' for i in range(10)])
+y = pd.Series(np.random.randint(0, 2, 1000))
+
+# Split data for time-based validation (simplified; for actual use, ensure chronological split)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+# Calculate class_weights for imbalanced data (if applicable)
+class_counts = y_train.value_counts()
+class_weights = {0: 1, 1: class_counts[0] / class_counts[1] if class_counts[1] > 0 else 1}
+
+# Initialize and train the CatBoost Classifier
+model = CatBoostClassifier(iterations=100, random_seed=42, verbose=0, 
+                           loss_function='Logloss', eval_metric='F1', class_weights=class_weights)
+# For categorical features, you'd typically pass 'cat_features=categorical_feature_indices' to CatBoost
+model.fit(X_train, y_train)
+
+# Predict on the test set
+y_pred = model.predict(X_test)
+
+# Calculate Macro F1 Score
+macro_f1 = f1_score(y_test, y_pred, average='macro')
+print(f'CatBoost Macro F1 Score: {macro_f1:.4f}')

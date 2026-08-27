@@ -1,0 +1,32 @@
+## Model name
+LightGBM Classifier
+
+## Example Python code
+import pandas as pd
+from sklearn.model_selection import train_test_split
+import lightgbm as lgb
+from sklearn.metrics import f1_score
+import numpy as np
+
+# Simulate data (replace with your actual data loading and preprocessing)
+np.random.seed(42)
+X = pd.DataFrame(np.random.rand(1000, 10), columns=[f'feature_{i}' for i in range(10)])
+y = pd.Series(np.random.randint(0, 2, 1000))
+
+# Split data for time-based validation (simplified; for actual use, ensure chronological split)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+# Calculate is_unbalance for imbalanced data (if applicable)
+# For LightGBM, use is_unbalance=True or scale_pos_weight for imbalanced datasets
+# is_unbalance=True sets scale_pos_weight automatically based on the training data
+
+# Initialize and train the LightGBM Classifier
+model = lgb.LGBMClassifier(objective='binary', metric='macro_f1', n_estimators=100, random_state=42, is_unbalance=True)
+model.fit(X_train, y_train)
+
+# Predict on the test set
+y_pred = model.predict(X_test)
+
+# Calculate Macro F1 Score
+macro_f1 = f1_score(y_test, y_pred, average='macro')
+print(f'LightGBM Macro F1 Score: {macro_f1:.4f}')

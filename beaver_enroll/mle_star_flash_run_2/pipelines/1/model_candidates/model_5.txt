@@ -1,0 +1,46 @@
+## Model name
+Multilayer Perceptron (MLP) with Keras
+
+## Example Python code
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from tensorflow import keras
+from tensorflow.keras import layers
+from sklearn.metrics import f1_score
+
+# Generate dummy data
+X = pd.DataFrame(np.random.rand(1000, 10), columns=[f'feature_{i}' for i in range(10)])
+y = pd.Series(np.random.randint(0, 2, 1000))
+
+# Split data (in a real competition, this would be a time-based split)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+# Scale numerical features for Neural Networks
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+# Build a simple Keras MLP model
+model = keras.Sequential([
+    layers.Dense(64, activation='relu', input_shape=[X_train_scaled.shape[1]]),
+    layers.Dropout(0.3),
+    layers.Dense(32, activation='relu'),
+    layers.Dropout(0.3),
+    layers.Dense(1, activation='sigmoid')
+])
+
+# Compile the model
+model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+
+# Train the model (use class_weight for imbalanced datasets, if applicable)
+model.fit(X_train_scaled, y_train, epochs=50, batch_size=32, verbose=0)
+
+# Make predictions (probabilities)
+y_pred_proba = model.predict(X_test_scaled)
+y_pred = (y_pred_proba > 0.5).astype(int)
+
+# Evaluate with Macro F1 Score
+macro_f1 = f1_score(y_test, y_pred, average='macro')
+print(f"Keras MLP Macro F1 Score: {macro_f1:.4f}")
