@@ -1,0 +1,68 @@
+## Model name
+LightGBM Classifier with Relational Aggregations & Spatial Feature Engineering
+
+## Example Python code
+import numpy as np
+import pandas as pd
+import lightgbm as lgb
+from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.metrics import roc_auc_score
+
+def train_lightgbm_pipeline(patch_df: pd.DataFrame, measurements_df: pd.DataFrame):
+    # 1. Relational Feature Aggregation (1-to-many patch_measurements summary)
+    agg_funcs = ['mean', 'std', 'min', 'max']
+    meas_agg = measurements_df.groupby('patch_id').agg({
+        'elevation': agg_funcs,
+        'aspect': agg_funcs,
+        'slope': agg_funcs,
+        'horizontal_distance_to_hydrology': agg_funcs,
+        'vertical_distance_to_hydrology': agg_funcs,
+        'horizontal_distance_to_roadways': agg_funcs,
+        'hillshade_9am': agg_funcs,
+        'hillshade_noon': agg_funcs,
+        'hillshade_3pm': agg_funcs,
+        'horizontal_distance_to_fire_points': agg_funcs
+    })
+    meas_agg.columns = ['_'.join(c) for c in meas_agg.columns]
+    
+    # 2. Relational Join
+    df = patch_df.merge(meas_agg, on='patch_id', how='left')
+    
+    # 3. Spatial & Cartographic Feature Engineering
+    h_dist = df['horizontal_distance_to_hydrology_mean']
+    v_dist = df['vertical_distance_to_hydrology_mean']
+    df['euclidean_distance_to_hydrology'] = np.sqrt(h_dist**2 + v_dist**2)
+    df['hydrology_elevation_diff'] = df['elevation_mean'] - v_dist
+    df['hillshade_ratio_noon_9am'] = (df['hillshade_noon_mean'] + 1) / (df['hillshade_9am_mean'] + 1)
+    
+    # Target encoding check (binary 0/1)
+    features = [c for c in df.columns if c not in ['patch_id', 'class']]
+    X = df[features]
+    y = (df['class'] == 2).astype(int)
+    groups = df['patch_id']
+    
+    # 4. Stratified Group Cross-Validation (3-fold)
+    sgkf = StratifiedGroupKFold(n_splits=3, shuffle=True, random_state=42)
+    oof_preds = np.zeros(len(df))
+    
+    params = {
+        'objective': 'binary',
+        'metric': 'auc',
+        'boosting_type': 'gbdt',
+        'learning_rate': 0.05,
+        'num_leaves': 63,
+        'max_depth': 8,
+        'feature_fraction': 0.8,
+        'random_state': 42,
+        'verbose': -1
+    }
+    
+    for fold, (train_idx, val_idx) in enumerate(sgkf.split(X, y, groups=groups)):
+        X_tr, y_tr = X.iloc[train_idx], y.iloc[train_idx]
+        X_va, y_va = X.iloc[val_idx], y.iloc[val_idx]
+        
+        clf = lgb.LGBMClassifier(**params, n_estimators=1500)
+        clf.fit(X_tr, y_tr, eval_set=[(X_va, y_va)], callbacks=[lgb.early_stopping(50, verbose=False)])
+        oof_preds[val_idx] = clf.predict_proba(X_va)[:, 1]
+        
+    print(f"LightGBM OOF ROC AUC: {roc_auc_score(y, oof_preds):.5f}")

@@ -1,0 +1,37 @@
+## Model name
+LightGBM Classifier
+
+## Example Python code
+import lightgbm as lgb
+import numpy as np
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import roc_auc_score
+
+def train_lgb_cv(X, y):
+    skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+    oof_preds = np.zeros(len(y))
+    
+    for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
+        X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+        y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+        
+        model = lgb.LGBMClassifier(
+            n_estimators=1500,
+            learning_rate=0.03,
+            num_leaves=63,
+            max_depth=8,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42,
+            n_jobs=-1
+        )
+        model.fit(
+            X_train, y_train,
+            eval_set=[(X_val, y_val)],
+            callbacks=[lgb.early_stopping(50, verbose=False)]
+        )
+        oof_preds[val_idx] = model.predict_proba(X_val)[:, 1]
+        
+    auc_score = roc_auc_score(y, oof_preds)
+    print(f'3-Fold CV ROC AUC: {auc_score:.5f}')
+    return oof_preds

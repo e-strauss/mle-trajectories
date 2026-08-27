@@ -1,0 +1,35 @@
+## Model name
+CatBoost Classifier
+
+## Example Python code
+from catboost import CatBoostClassifier
+import numpy as np
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import roc_auc_score
+
+def train_catboost_cv(X, y):
+    skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+    oof_preds = np.zeros(len(y))
+    
+    for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
+        X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+        y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+        
+        model = CatBoostClassifier(
+            iterations=1500,
+            learning_rate=0.03,
+            depth=7,
+            eval_metric='AUC',
+            random_seed=42,
+            verbose=False
+        )
+        model.fit(
+            X_train, y_train,
+            eval_set=(X_val, y_val),
+            early_stopping_rounds=50
+        )
+        oof_preds[val_idx] = model.predict_proba(X_val)[:, 1]
+        
+    auc_score = roc_auc_score(y, oof_preds)
+    print(f'3-Fold CV ROC AUC: {auc_score:.5f}')
+    return oof_preds

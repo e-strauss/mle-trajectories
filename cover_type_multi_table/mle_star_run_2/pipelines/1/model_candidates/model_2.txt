@@ -1,0 +1,55 @@
+## Model name
+CatBoost Classifier with High-Dimensional Relational Interactions
+
+## Example Python code
+import numpy as np
+import pandas as pd
+from catboost import CatBoostClassifier
+from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.metrics import roc_auc_score
+
+def train_catboost_pipeline(patch_df: pd.DataFrame, measurements_df: pd.DataFrame):
+    # 1. Relational Feature Aggregation
+    agg_dict = {
+        'elevation': ['mean', 'std', 'min', 'max'],
+        'slope': ['mean', 'max'],
+        'horizontal_distance_to_hydrology': ['mean'],
+        'vertical_distance_to_hydrology': ['mean'],
+        'horizontal_distance_to_roadways': ['mean'],
+        'horizontal_distance_to_fire_points': ['mean']
+    }
+    meas_agg = measurements_df.groupby('patch_id').agg(agg_dict)
+    meas_agg.columns = ['_'.join(c) for c in meas_agg.columns]
+    
+    # 2. Merge Tables
+    df = patch_df.merge(meas_agg, on='patch_id', how='left')
+    
+    # 3. Spatial Trigonometric & Difference Features
+    df['water_dist_3d'] = np.sqrt(df['horizontal_distance_to_hydrology_mean']**2 + df['vertical_distance_to_hydrology_mean']**2)
+    df['elevation_slope_interaction'] = df['elevation_mean'] * np.sin(np.radians(df['slope_mean'].fillna(0)))
+    
+    X = df.drop(columns=['patch_id', 'class'])
+    y = (df['class'] == 2).astype(int)
+    groups = df['patch_id']
+    
+    # 4. Stratified Group 3-Fold Evaluation
+    sgkf = StratifiedGroupKFold(n_splits=3, shuffle=True, random_state=42)
+    oof_preds = np.zeros(len(df))
+    
+    model = CatBoostClassifier(
+        iterations=1500,
+        learning_rate=0.05,
+        depth=7,
+        eval_metric='AUC',
+        random_seed=42,
+        verbose=0
+    )
+    
+    for fold, (train_idx, val_idx) in enumerate(sgkf.split(X, y, groups=groups)):
+        X_tr, y_tr = X.iloc[train_idx], y.iloc[train_idx]
+        X_va, y_va = X.iloc[val_idx], y.iloc[val_idx]
+        
+        model.fit(X_tr, y_tr, eval_set=(X_va, y_va), early_stopping_rounds=50, verbose=False)
+        oof_preds[val_idx] = model.predict_proba(X_va)[:, 1]
+        
+    print(f"CatBoost OOF ROC AUC: {roc_auc_score(y, oof_preds):.5f}")
