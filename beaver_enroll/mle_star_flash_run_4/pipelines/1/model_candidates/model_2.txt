@@ -1,0 +1,30 @@
+## Model name
+XGBoost Classifier
+
+## Example Python code
+import xgboost as xgb
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import f1_score
+from sklearn.datasets import make_classification
+from sklearn.preprocessing import LabelEncoder
+
+# Generate synthetic data
+X, y = make_classification(n_samples=1000, n_features=20, n_informative=10, n_redundant=5, random_state=42)
+
+# XGBoost requires the target variable to be integer encoded. [6]
+le = LabelEncoder()
+y = le.fit_transform(y)
+
+# Split data
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+# Initialize and train the model using the scikit-learn API. [1, 9]
+xgb_clf = xgb.XGBClassifier(objective='binary:logistic', eval_metric='logloss', use_label_encoder=False, random_state=42)
+xgb_clf.fit(X_train, y_train)
+
+# Make predictions
+y_pred = xgb_clf.predict(X_test)
+
+# Evaluate the model
+macro_f1 = f1_score(y_test, y_pred, average='macro')
+print(f'XGBoost Macro F1 Score: {macro_f1:.4f}')
