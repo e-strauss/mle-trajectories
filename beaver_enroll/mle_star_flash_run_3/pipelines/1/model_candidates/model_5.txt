@@ -1,0 +1,60 @@
+## Model name
+TabNet Classifier
+
+## Example Python code
+from pytorch_tabnet.tab_model import TabNetClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import f1_score
+from sklearn.preprocessing import LabelEncoder
+import numpy as np
+import pandas as pd
+
+# Assuming X_train, y_train, X_test are preprocessed Pandas DataFrames or NumPy arrays
+# TabNet works best with numerical input, categorical features should be label encoded
+
+# Example dummy data (replace with your actual data)
+X_train_df = pd.DataFrame(np.random.rand(1000, 8), columns=[f'feature_{i}' for i in range(8)])
+X_train_df['categorical_feature_0'] = np.random.choice(['A', 'B', 'C'], 1000)
+X_train_df['categorical_feature_1'] = np.random.choice(['X', 'Y'], 1000)
+y_train_np = np.random.randint(0, 2, 1000)
+
+X_test_df = pd.DataFrame(np.random.rand(200, 8), columns=[f'feature_{i}' for i in range(8)])
+X_test_df['categorical_feature_0'] = np.random.choice(['A', 'B', 'C'], 200)
+X_test_df['categorical_feature_1'] = np.random.choice(['X', 'Y'], 200)
+
+# Label encode categorical features for TabNet
+for col in ['categorical_feature_0', 'categorical_feature_1']:
+    le = LabelEncoder()
+    X_train_df[col] = le.fit_transform(X_train_df[col])
+    X_test_df[col] = le.transform(X_test_df[col])
+
+X_train = X_train_df.values  # Convert to numpy array for TabNet
+y_train = y_train_np
+X_test = X_test_df.values  # Convert to numpy array for TabNet
+
+# Identify categorical feature indices and their cardinalities
+cat_features = [X_train_df.columns.get_loc(col) for col in ['categorical_feature_0', 'categorical_feature_1']]
+cat_dims = [len(X_train_df[col].unique()) for col in ['categorical_feature_0', 'categorical_feature_1']]
+
+# Initialize TabNet Classifier
+# verbose=0 to suppress training output, patience for early stopping
+# eval_metric can be 'f1' or 'auc'
+model = TabNetClassifier(verbose=0, seed=42, 
+                         cat_features=cat_features, 
+                         cat_dims=cat_dims, 
+                         cat_emb_dim=1)
+
+# Train the model
+# max_epochs, patience, and batch_size are important hyperparameters
+model.fit(X_train=X_train, y_train=y_train, 
+          max_epochs=100, patience=20, 
+          batch_size=1024, virtual_batch_size=128)
+
+# Make predictions on the test set
+y_pred = model.predict(X_test)
+
+# Get prediction probabilities
+y_pred_proba = model.predict_proba(X_test)[:, 1]
+
+# Evaluate Macro F1 score (example, you'll need true labels for X_test)
+# f1 = f1_score(y_test, y_pred, average='macro')

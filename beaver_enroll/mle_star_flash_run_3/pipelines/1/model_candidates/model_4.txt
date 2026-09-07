@@ -1,0 +1,34 @@
+## Model name
+Random Forest Classifier
+
+## Example Python code
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import f1_score
+import numpy as np
+
+# Assuming X_train, y_train, X_test are preprocessed NumPy arrays or Pandas DataFrames
+# X_train: training features, y_train: training labels (binary: 0 or 1)
+# X_test: test features
+
+# Example dummy data (replace with your actual data)
+X_train = np.random.rand(1000, 10)
+y_train = np.random.randint(0, 2, 1000)
+X_test = np.random.rand(200, 10)
+
+# Initialize Random Forest Classifier
+# 'class_weight': 'balanced' can help with imbalanced datasets
+# 'n_estimators': number of trees in the forest
+model = RandomForestClassifier(n_estimators=500, random_state=42, max_depth=10, class_weight='balanced')
+
+# Train the model
+model.fit(X_train, y_train)
+
+# Make predictions on the test set
+y_pred = model.predict(X_test)
+
+# Get prediction probabilities
+y_pred_proba = model.predict_proba(X_test)[:, 1]
+
+# Evaluate Macro F1 score (example, you'll need true labels for X_test)
+# f1 = f1_score(y_test, y_pred, average='macro')

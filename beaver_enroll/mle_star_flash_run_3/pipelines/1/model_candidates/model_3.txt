@@ -1,0 +1,46 @@
+## Model name
+CatBoost Classifier
+
+## Example Python code
+from catboost import CatBoostClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import f1_score
+import numpy as np
+import pandas as pd
+
+# Assuming X_train, y_train, X_test are preprocessed NumPy arrays or Pandas DataFrames
+# X_train: training features, y_train: training labels (binary: 0 or 1)
+# X_test: test features
+
+# Example dummy data (replace with your actual data)
+X_train = pd.DataFrame(np.random.rand(1000, 8), columns=[f'feature_{i}' for i in range(8)])
+X_train['categorical_feature_0'] = np.random.choice(['A', 'B', 'C'], 1000)
+X_train['categorical_feature_1'] = np.random.choice(['X', 'Y'], 1000)
+y_train = np.random.randint(0, 2, 1000)
+X_test = pd.DataFrame(np.random.rand(200, 8), columns=[f'feature_{i}' for i in range(8)])
+X_test['categorical_feature_0'] = np.random.choice(['A', 'B', 'C'], 200)
+X_test['categorical_feature_1'] = np.random.choice(['X', 'Y'], 200)
+
+# Identify categorical features (CatBoost can handle them directly)
+categorical_features_indices = [X_train.columns.get_loc(col) for col in X_train.select_dtypes(include='object').columns]
+
+# Initialize CatBoost Classifier
+# 'loss_function': 'Logloss' for binary classification
+# 'eval_metric': 'F1' is directly supported, or 'AUC'
+# 'auto_class_weights': 'Balanced' can help with imbalanced datasets
+model = CatBoostClassifier(iterations=500, learning_rate=0.05, depth=6, 
+                           loss_function='Logloss', eval_metric='F1', 
+                           random_seed=42, verbose=0, 
+                           cat_features=categorical_features_indices)
+
+# Train the model
+model.fit(X_train, y_train)
+
+# Make predictions on the test set
+y_pred = model.predict(X_test)
+
+# Get prediction probabilities
+y_pred_proba = model.predict_proba(X_test)[:, 1]
+
+# Evaluate Macro F1 score (example, you'll need true labels for X_test)
+# f1 = f1_score(y_test, y_pred, average='macro')
