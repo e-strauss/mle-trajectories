@@ -1,0 +1,68 @@
+## Model name
+ConvNeXt-V2 Large (Regression Formulation with Post-Hoc QWK Threshold Optimization)
+
+## Example Python code
+import torch
+import torch.nn as nn
+import timm
+import numpy as np
+from scipy.optimize import minimize
+from sklearn.metrics import cohen_kappa_score
+
+class ConvNeXtV2ForDR(nn.Module):
+    """
+    ConvNeXt-V2 Large configured as a continuous regression model for DR grading.
+    Treating 5 ordinal grades as continuous targets [0, 4] with MSE/SmoothL1 loss
+    consistently outperforms multi-class cross-entropy for Quadratic Weighted Kappa.
+    """
+    def __init__(self, model_name='convnextv2_large.fcmae_ft_in22k_in1k_384', pretrained=True, dropout_rate=0.3):
+        super().__init__()
+        self.backbone = timm.create_model(model_name, pretrained=pretrained, num_classes=0)
+        in_features = self.backbone.num_features
+        self.head = nn.Sequential(
+            nn.Dropout(dropout_rate),
+            nn.Linear(in_features, 256),
+            nn.GELU(),
+            nn.BatchNorm1d(256),
+            nn.Dropout(dropout_rate / 2),
+            nn.Linear(256, 1)
+        )
+
+    def forward(self, x):
+        feat = self.backbone(x)
+        out = self.head(feat)
+        return out.squeeze(-1)
+
+class OptimizedQWKRounder:
+    """Optimizes decision boundaries [t1, t2, t3, t4] to maximize QWK on OOF validation predictions."""
+    def __init__(self):
+        self.coef_ = [0.5, 1.5, 2.5, 3.5]
+
+    def _loss(self, coef, x, y):
+        x_discrete = np.digitize(x, coef)
+        return -cohen_kappa_score(y, x_discrete, weights='quadratic')
+
+    def fit(self, x, y):
+        res = minimize(self._loss, self.coef_, args=(x, y), method='Nelder-Mead')
+        self.coef_ = sorted(res.x)
+
+    def predict(self, x):
+        return np.digitize(x, self.coef_)
+
+# Example Training / Inference Step
+if __name__ == '__main__':
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = ConvNeXtV2ForDR().to(device)
+    criterion = nn.SmoothL1Loss(beta=0.5)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-2)
+
+    # Dummy batch: 8 fundus images (3x384x384), ordinal targets in [0, 4]
+    images = torch.randn(8, 3, 384, 384, device=device)
+    targets = torch.tensor([0.0, 1.0, 2.0, 4.0, 3.0, 0.0, 2.0, 1.0], device=device)
+
+    optimizer.zero_grad()
+    preds = model(images)
+    loss = criterion(preds, targets)
+    loss.backward()
+    optimizer.step()
+    print(f'Training Loss: {loss.item():.4f}')

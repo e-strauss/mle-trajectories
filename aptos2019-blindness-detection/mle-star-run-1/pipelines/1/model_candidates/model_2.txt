@@ -1,0 +1,74 @@
+## Model name
+EVA-02 Large 448 (Ordinal CORAL Head for Retinal Severity Grading)
+
+## Example Python code
+import torch
+import torch.nn as nn
+import timm
+
+class CoralLoss(nn.Module):
+    """
+    Consistent Rank Logits (CORAL) Loss for Ordinal Classification.
+    Converts a K-class ordinal problem into K-1 binary classification subtasks
+    with shared weights and independent class thresholds to guarantee monotonicity.
+    """
+    def __init__(self, num_classes=5):
+        super().__init__()
+        self.num_classes = num_classes
+
+    def forward(self, logits, targets):
+        # Convert scalar targets (0..K-1) to binary rank matrices of size (B, K-1)
+        levels = torch.zeros((targets.size(0), self.num_classes - 1), device=targets.device)
+        for i in range(self.num_classes - 1):
+            levels[:, i] = (targets > i).float()
+        
+        # Binary cross entropy with logits over all binary tasks
+        loss = nn.functional.binary_cross_entropy_with_logits(logits, levels)
+        return loss
+
+class EVA02CoralModel(nn.Module):
+    """
+    EVA-02 Large Patch14 448 vision transformer with an ordinal CORAL head.
+    Captures multi-scale diabetic retinopathy micro-lesions (aneurysms, exudates) via high-res attention.
+    """
+    def __init__(self, model_name='eva02_large_patch14_448.mim_m38m_ft_in22k_in1k', pretrained=True, num_classes=5):
+        super().__init__()
+        self.backbone = timm.create_model(model_name, pretrained=pretrained, num_classes=0)
+        in_features = self.backbone.num_features
+        
+        # Ordinal output: shared projection weight with K-1 independent bias offsets
+        self.fc = nn.Linear(in_features, 1, bias=False)
+        self.thresholds = nn.Parameter(torch.zeros(num_classes - 1))
+
+    def forward(self, x):
+        feat = self.backbone(x) # (B, D)
+        score = self.fc(feat)   # (B, 1)
+        logits = score + self.thresholds # (B, K-1)
+        return logits
+
+    def predict_class(self, x):
+        with torch.no_grad():
+            logits = self.forward(x)
+            probs = torch.sigmoid(logits)
+            # Count how many thresholds were exceeded
+            return (probs > 0.5).sum(dim=1)
+
+# Example Training / Inference Step
+if __name__ == '__main__':
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = EVA02CoralModel(num_classes=5).to(device)
+    criterion = CoralLoss(num_classes=5)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=1e-4)
+
+    # Dummy batch: 4 high-res fundus images (3x448x448), discrete targets (0 to 4)
+    images = torch.randn(4, 3, 448, 448, device=device)
+    targets = torch.tensor([0, 2, 4, 1], device=device)
+
+    optimizer.zero_grad()
+    logits = model(images)
+    loss = criterion(logits, targets)
+    loss.backward()
+    optimizer.step()
+
+    preds = model.predict_class(images)
+    print(f'Training Loss: {loss.item():.4f} | Predicted Labels: {preds.tolist()}')
