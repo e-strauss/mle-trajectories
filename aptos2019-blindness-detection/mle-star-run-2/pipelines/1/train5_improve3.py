@@ -1,0 +1,575 @@
+
+import os
+from pathlib import Path
+import numpy as np
+import pandas as pd
+from PIL import Image
+from scipy.optimize import minimize
+from sklearn.metrics import cohen_kappa_score
+from sklearn.model_selection import StratifiedKFold
+import timm
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms
+
+def seed_everything(seed=42):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+
+# Configuration
+INPUT_DIR = Path("./input")
+if not INPUT_DIR.exists():
+    INPUT_DIR = Path(".")
+
+TRAIN_CSV = INPUT_DIR / "train.csv"
+TRAIN_IMAGES_DIR = INPUT_DIR / "train_images"
+
+BATCH_SIZE = 16
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Dataset
+class RetinopathyDataset(Dataset):
+    def __init__(self, df, img_dir, transform=None):
+        self.df = df.reset_index(drop=True)
+        self.img_dir = Path(img_dir)
+        self.transform = transform
+        self.image_ids = self.df["id_code"].values
+        self.labels = self.df["diagnosis"].values.astype(np.float32)
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        img_id = self.image_ids[idx]
+        img_path = self.img_dir / f"{img_id}.png"
+        image = Image.open(img_path).convert("RGB")
+
+        if self.transform:
+            image = self.transform(image)
+
+        label = torch.tensor(self.labels[idx], dtype=torch.float32)
+        return image, label
+
+
+
+# Loss Functions
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class ClassBalancedSoftQWKLoss(nn.Module):
+    """
+    Differentiable Soft Quadratic Weighted Kappa (QWK) loss surrogate with
+    dynamic inverse-frequency class-balancing to upweight rare high-grade classes.
+    """
+    def __init__(self, num_classes=5, eps=1e-6):
+        super().__init__()
+        self.num_classes = num_classes
+        self.eps = eps
+        
+        # Precompute quadratic penalty matrix: W_ij = ((i - j) / (K - 1))^2
+        i, j = torch.meshgrid(
+            torch.arange(num_classes, dtype=torch.float32),
+            torch.arange(num_classes, dtype=torch.float32),
+            indexing='ij'
+        )
+        weights = ((i - j) / (num_classes - 1)) ** 2
+        self.register_buffer('weights', weights)
+
+    def forward(self, probs, targets):
+        """
+        probs: (batch_size, num_classes) predicted class probabilities
+        targets: (batch_size,) integer class targets
+        """
+        batch_size = targets.size(0)
+        device = targets.device
+        
+        # One-hot encode ground truth targets
+        targets_one_hot = F.one_hot(targets.long(), num_classes=self.num_classes).float()
+        
+        # Compute dynamic inverse class-frequency weights within batch (with smoothing)
+        class_counts = targets_one_hot.sum(dim=0)
+        class_weights = (batch_size / (self.num_classes * (class_counts + 1.0))).detach()
+        sample_weights = (targets_one_hot * class_weights.unsqueeze(0)).sum(dim=-1, keepdim=True)
+        sample_weights = sample_weights / (sample_weights.sum() + self.eps)
+        
+        # Frequency-weighted prediction and target distributions
+        weighted_probs = probs * sample_weights
+        weighted_targets = targets_one_hot * sample_weights
+        
+        hist_pred = weighted_probs.sum(dim=0)
+        hist_target = weighted_targets.sum(dim=0)
+        
+        # Weighted observed and expected confusion matrices
+        observed = torch.matmul(probs.t(), weighted_targets)
+        expected = torch.outer(hist_pred, hist_target)
+        
+        # Normalize matrices
+        observed = observed / (observed.sum() + self.eps)
+        expected = expected / (expected.sum() + self.eps)
+        
+        penalty_weights = self.weights.to(device)
+        numerator = torch.sum(penalty_weights * observed)
+        denominator = torch.sum(penalty_weights * expected)
+        
+        # Return 1 - QWK as the loss to minimize
+        return numerator / (denominator + self.eps)
+
+
+class OrdinalEMDLoss(nn.Module):
+    """
+    Ordinal Earth Mover's Distance (EMD / Wasserstein-1) Loss.
+    Computes exact L1 distance between cumulative prediction distributions
+    and ground-truth cumulative step functions.
+    """
+    def __init__(self, num_classes=5):
+        super().__init__()
+        self.num_classes = num_classes
+
+    def forward(self, probs, targets):
+        """
+        probs: (batch_size, num_classes) predicted class probabilities
+        targets: (batch_size,) integer class targets
+        """
+        targets_one_hot = F.one_hot(targets.long(), num_classes=self.num_classes).float()
+        
+        # Cumulative distribution functions (CDF)
+        cdf_pred = torch.cumsum(probs, dim=-1)
+        cdf_target = torch.cumsum(targets_one_hot, dim=-1)
+        
+        # L1 distance over intermediate cumulative thresholds (excluding the final step which is identically 1)
+        emd_loss = torch.abs(cdf_pred[:, :-1] - cdf_target[:, :-1]).sum(dim=-1).mean()
+        return emd_loss
+
+
+class LogCoshExpectationLoss(nn.Module):
+    """
+    Numerically stable Log-Cosh loss on expected grade surrogate.
+    Provides smooth, robust continuous gradients directly aligning with downstream
+    threshold optimization (e.g. Nelder-Mead).
+    """
+    def __init__(self, num_classes=5):
+        super().__init__()
+        self.num_classes = num_classes
+        self.register_buffer('class_values', torch.arange(num_classes, dtype=torch.float32))
+
+    def forward(self, probs, targets):
+        """
+        probs: (batch_size, num_classes) predicted class probabilities
+        targets: (batch_size,) integer or float class targets
+        """
+        device = targets.device
+        class_vals = self.class_values.to(device)
+        
+        # Expected continuous grade: E[Y] = sum(k * P(Y = k))
+        expected_grade = torch.sum(probs * class_vals, dim=-1)
+        diff = expected_grade - targets.float()
+        
+        # Numerically stable Log-Cosh: log(cosh(x)) = |x| + log1p(exp(-2|x|)) - log(2)
+        abs_diff = torch.abs(diff)
+        log_cosh = abs_diff + torch.log1p(torch.exp(-2.0 * abs_diff)) - 0.6931471805599453
+        return log_cosh.mean()
+
+
+class OrdinalClassificationLoss(nn.Module):
+    """
+    Composite Ordinal Loss combining:
+    1. Ordinal Earth Mover's Distance (EMD / Wasserstein-1) Loss
+    2. Continuous Log-Cosh Expected Grade Surrogate
+    3. Class-Balanced Differentiable Soft QWK Loss
+    """
+    def __init__(
+        self,
+        num_classes=5,
+        emd_weight=1.0,
+        log_cosh_weight=0.5,
+        qwk_weight=1.0,
+        eps=1e-6
+    ):
+        super().__init__()
+        self.num_classes = num_classes
+        self.emd_weight = emd_weight
+        self.log_cosh_weight = log_cosh_weight
+        self.qwk_weight = qwk_weight
+        
+        self.emd_loss_fn = OrdinalEMDLoss(num_classes=num_classes)
+        self.log_cosh_loss_fn = LogCoshExpectationLoss(num_classes=num_classes)
+        self.soft_qwk_loss_fn = ClassBalancedSoftQWKLoss(num_classes=num_classes, eps=eps)
+
+    def forward(self, logits, targets, num_classes=None):
+        """
+        logits: (batch_size, num_classes) class logits OR (batch_size, num_classes-1) cumulative logits
+        targets: (batch_size,) integer class targets
+        """
+        k = num_classes if num_classes is not None else self.num_classes
+        
+        if logits.size(-1) == k:
+            probs = F.softmax(logits, dim=-1)
+        elif logits.size(-1) == k - 1:
+            cum_probs = torch.sigmoid(logits)
+            p0 = 1.0 - cum_probs[:, 0:1]
+            pk = cum_probs[:, :-1] - cum_probs[:, 1:]
+            pK = cum_probs[:, -1:]
+            probs = torch.cat([p0, pk, pK], dim=1)
+            probs = torch.clamp(probs, min=1e-7, max=1.0)
+            probs = probs / probs.sum(dim=-1, keepdim=True)
+        else:
+            probs = F.softmax(logits, dim=-1)
+
+        loss = 0.0
+        if self.emd_weight > 0.0:
+            loss = loss + self.emd_weight * self.emd_loss_fn(probs, targets)
+        if self.log_cosh_weight > 0.0:
+            loss = loss + self.log_cosh_weight * self.log_cosh_loss_fn(probs, targets)
+        if self.qwk_weight > 0.0:
+            loss = loss + self.qwk_weight * self.soft_qwk_loss_fn(probs, targets)
+            
+        return loss
+
+
+
+
+# Model Definitions
+class GeM(nn.Module):
+    def __init__(self, p=3.0, eps=1e-6):
+        super().__init__()
+        self.p = nn.Parameter(torch.ones(1) * p)
+        self.eps = eps
+
+    def forward(self, x):
+        if x.dim() == 4:
+            return x.clamp(min=self.eps).pow(self.p).mean(dim=(-2, -1)).pow(1.0 / self.p)
+        elif x.dim() == 3:
+            return x.clamp(min=self.eps).pow(self.p).mean(dim=1).pow(1.0 / self.p)
+        return x
+
+
+class ConvNeXtV2RegressionModel(nn.Module):
+    def __init__(self, model_name="convnextv2_tiny.fcmae_ft_in22k_in1k_384", pretrained=True, drop_rate=0.2, num_dropout_samples=5):
+        super().__init__()
+        self.backbone = timm.create_model(model_name, pretrained=pretrained, num_classes=0, global_pool='')
+        in_features = self.backbone.num_features
+        self.gem = GeM()
+        self.norm = nn.LayerNorm(in_features)
+        self.dropouts = nn.ModuleList([nn.Dropout(drop_rate) for _ in range(num_dropout_samples)])
+        self.head = nn.Linear(in_features, 1)
+
+    def forward(self, x):
+        feat = self.backbone(x)
+        feat = self.gem(feat)
+        feat = self.norm(feat)
+        logits = torch.mean(torch.stack([self.head(drop(feat)) for drop in self.dropouts], dim=0), dim=0)
+        return logits.squeeze(-1)
+
+
+class EVA02OrdinalModel(nn.Module):
+    def __init__(self, model_name="eva02_base_patch14_448.mim_in22k_ft_in22k_in1k", num_classes=5, pretrained=True, drop_rate=0.2, num_dropout_samples=5):
+        super().__init__()
+        self.backbone = timm.create_model(model_name, pretrained=pretrained, num_classes=0, global_pool='')
+        in_features = self.backbone.num_features
+        self.gem = GeM()
+        self.norm = nn.LayerNorm(in_features)
+        self.dropouts = nn.ModuleList([nn.Dropout(drop_rate) for _ in range(num_dropout_samples)])
+        self.classifier = nn.Linear(in_features, num_classes - 1)
+
+    def forward(self, x):
+        feat = self.backbone(x)
+        feat = self.gem(feat)
+        feat = self.norm(feat)
+        logits = torch.mean(torch.stack([self.classifier(drop(feat)) for drop in self.dropouts], dim=0), dim=0)
+        return logits
+
+    def predict_continuous(self, x):
+        logits = self.forward(x)
+        probs = torch.sigmoid(logits)
+        return probs.sum(dim=1)
+
+
+
+# Optimized Rounder for QWK
+class OptimizedRounder:
+    def __init__(self):
+        self.coef_ = np.array([0.5, 1.5, 2.5, 3.5])
+
+    def _loss(self, coef, X, y):
+        sorted_coef = np.sort(coef)
+        preds = np.digitize(X, sorted_coef)
+        return -cohen_kappa_score(y, preds, weights="quadratic")
+
+    def fit(self, X, y):
+        initial_guesses = [
+            np.array([0.5, 1.5, 2.5, 3.5]),
+            np.array([0.55, 1.55, 2.55, 3.55]),
+            np.array([0.45, 1.45, 2.45, 3.45]),
+        ]
+
+        # Quantile-based threshold initialization matching empirical distribution of y
+        try:
+            counts = np.bincount(y.astype(int), minlength=5)
+            cum_dist = np.cumsum(counts / len(y))[:-1]
+            cum_dist = np.clip(cum_dist, 1e-4, 1.0 - 1e-4)
+            quantile_init = np.quantile(X, cum_dist)
+            initial_guesses.append(quantile_init)
+            initial_guesses.append(quantile_init - 0.1)
+            initial_guesses.append(quantile_init + 0.1)
+        except Exception:
+            pass
+
+        best_loss = float("inf")
+        best_coef = np.copy(self.coef_)
+
+        methods = ["Powell", "Nelder-Mead"]
+        for init in initial_guesses:
+            for method in methods:
+                try:
+                    res = minimize(
+                        self._loss,
+                        init,
+                        args=(X, y),
+                        method=method,
+                        options={"maxiter": 500},
+                    )
+                    if res.fun < best_loss:
+                        best_loss = res.fun
+                        best_coef = res.x
+                except Exception:
+                    continue
+
+        self.coef_ = np.sort(best_coef)
+
+    def predict(self, X):
+        return np.digitize(X, np.sort(self.coef_))
+
+
+
+def main():
+    seed_everything(42)
+
+    # Load Metadata and create Train / Validation Split
+    df = pd.read_csv(TRAIN_CSV)
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+    for train_idx, val_idx in skf.split(df, df["diagnosis"]):
+        train_df = df.iloc[train_idx].reset_index(drop=True)
+        val_df = df.iloc[val_idx].reset_index(drop=True)
+        break
+
+    def get_parameter_groups(model, base_lr, backbone_mult=0.1):
+        head_keywords = ["head", "fc", "classifier", "linear"]
+        backbone_params = []
+        head_params = []
+        for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            if any(k in name.lower() for k in head_keywords):
+                head_params.append(param)
+            else:
+                backbone_params.append(param)
+
+        if not backbone_params:
+            return [{"params": head_params, "lr": base_lr}]
+        if not head_params:
+            return [{"params": backbone_params, "lr": base_lr}]
+
+        return [
+            {"params": backbone_params, "lr": base_lr * backbone_mult},
+            {"params": head_params, "lr": base_lr},
+        ]
+
+    # ==========================
+    # Train Model 1: ConvNeXtV2 (Regression)
+    # ==========================
+    img_size_1 = 384
+    epochs_1 = 4
+    lr_1 = 2e-4
+    wd_1 = 1e-2
+
+    train_transform_1 = transforms.Compose([
+        transforms.Resize((img_size_1, img_size_1)),
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.RandomVerticalFlip(p=0.5),
+        transforms.RandomRotation(degrees=30),
+        transforms.ColorJitter(brightness=0.1, contrast=0.1),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    val_transform_1 = transforms.Compose([
+        transforms.Resize((img_size_1, img_size_1)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    train_dataset_1 = RetinopathyDataset(train_df, TRAIN_IMAGES_DIR, transform=train_transform_1)
+    val_dataset_1 = RetinopathyDataset(val_df, TRAIN_IMAGES_DIR, transform=val_transform_1)
+
+    train_loader_1 = DataLoader(train_dataset_1, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader_1 = DataLoader(val_dataset_1, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+
+    model_1 = ConvNeXtV2RegressionModel(model_name="convnextv2_tiny.fcmae_ft_in22k_in1k_384", pretrained=True).to(DEVICE)
+    criterion_1 = nn.SmoothL1Loss()
+    optimizer_1 = torch.optim.AdamW(get_parameter_groups(model_1, lr_1, backbone_mult=0.1), lr=lr_1, weight_decay=wd_1)
+    scheduler_1 = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_1, T_max=epochs_1, eta_min=1e-6)
+    scaler_1 = torch.cuda.amp.GradScaler()
+
+    best_val_preds_1 = None
+    best_qwk_1 = -1.0
+
+    for epoch in range(epochs_1):
+        model_1.train()
+        for images, targets in train_loader_1:
+            images = images.to(DEVICE)
+            targets = targets.to(DEVICE)
+
+            optimizer_1.zero_grad()
+            with torch.cuda.amp.autocast():
+                outputs = model_1(images)
+                loss = criterion_1(outputs, targets)
+
+            scaler_1.scale(loss).backward()
+            scaler_1.unscale_(optimizer_1)
+            torch.nn.utils.clip_grad_norm_(model_1.parameters(), max_norm=1.0)
+            scaler_1.step(optimizer_1)
+            scaler_1.update()
+
+        scheduler_1.step()
+
+        model_1.eval()
+        val_preds = []
+        val_targets = []
+        with torch.no_grad():
+            for images, targets in val_loader_1:
+                images = images.to(DEVICE)
+                # 4-view TTA: original, horizontal flip, vertical flip, diagonal flip
+                with torch.cuda.amp.autocast():
+                    p0 = model_1(images)
+                    p1 = model_1(torch.flip(images, dims=[-1]))
+                    p2 = model_1(torch.flip(images, dims=[-2]))
+                    p3 = model_1(torch.flip(images, dims=[-2, -1]))
+                    tta_preds = (p0 + p1 + p2 + p3) / 4.0
+
+                val_preds.extend(tta_preds.cpu().numpy().tolist())
+                val_targets.extend(targets.numpy().tolist())
+
+        val_preds = np.array(val_preds)
+        val_targets = np.array(val_targets, dtype=int)
+
+        rounder = OptimizedRounder()
+        rounder.fit(val_preds, val_targets)
+        discrete_preds = rounder.predict(val_preds)
+        qwk = cohen_kappa_score(val_targets, discrete_preds, weights="quadratic")
+
+        if qwk > best_qwk_1:
+            best_qwk_1 = qwk
+            best_val_preds_1 = val_preds
+
+    # ==========================
+    # Train Model 2: EVA-02 (Ordinal Classification)
+    # ==========================
+    img_size_2 = 448
+    epochs_2 = 4
+    lr_2 = 5e-5
+    wd_2 = 0.05
+
+    train_transform_2 = transforms.Compose([
+        transforms.Resize((img_size_2, img_size_2)),
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.RandomVerticalFlip(p=0.5),
+        transforms.RandomRotation(degrees=20),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    val_transform_2 = transforms.Compose([
+        transforms.Resize((img_size_2, img_size_2)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    train_dataset_2 = RetinopathyDataset(train_df, TRAIN_IMAGES_DIR, transform=train_transform_2)
+    val_dataset_2 = RetinopathyDataset(val_df, TRAIN_IMAGES_DIR, transform=val_transform_2)
+
+    train_loader_2 = DataLoader(train_dataset_2, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader_2 = DataLoader(val_dataset_2, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+
+    model_2 = EVA02OrdinalModel(model_name="eva02_base_patch14_448.mim_in22k_ft_in22k_in1k", num_classes=5, pretrained=True).to(DEVICE)
+    criterion_2 = OrdinalClassificationLoss()
+    optimizer_2 = torch.optim.AdamW(get_parameter_groups(model_2, lr_2, backbone_mult=0.1), lr=lr_2, weight_decay=wd_2)
+    scheduler_2 = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_2, T_max=epochs_2, eta_min=1e-6)
+    scaler_2 = torch.cuda.amp.GradScaler()
+
+    best_val_preds_2 = None
+    best_qwk_2 = -1.0
+
+    for epoch in range(epochs_2):
+        model_2.train()
+        for images, targets in train_loader_2:
+            images = images.to(DEVICE)
+            targets = targets.to(DEVICE)
+
+            optimizer_2.zero_grad()
+            with torch.cuda.amp.autocast():
+                logits = model_2(images)
+                loss = criterion_2(logits, targets)
+
+            scaler_2.scale(loss).backward()
+            scaler_2.unscale_(optimizer_2)
+            torch.nn.utils.clip_grad_norm_(model_2.parameters(), max_norm=1.0)
+            scaler_2.step(optimizer_2)
+            scaler_2.update()
+
+        scheduler_2.step()
+
+        model_2.eval()
+        val_preds = []
+        with torch.no_grad():
+            for images, targets in val_loader_2:
+                images = images.to(DEVICE)
+                # 4-view TTA: original, horizontal flip, vertical flip, diagonal flip
+                with torch.cuda.amp.autocast():
+                    p0 = model_2.predict_continuous(images)
+                    p1 = model_2.predict_continuous(torch.flip(images, dims=[-1]))
+                    p2 = model_2.predict_continuous(torch.flip(images, dims=[-2]))
+                    p3 = model_2.predict_continuous(torch.flip(images, dims=[-2, -1]))
+                    tta_preds = (p0 + p1 + p2 + p3) / 4.0
+
+                val_preds.extend(tta_preds.cpu().numpy().tolist())
+
+        val_preds = np.array(val_preds)
+        rounder = OptimizedRounder()
+        rounder.fit(val_preds, val_targets)
+        discrete_preds = rounder.predict(val_preds)
+        qwk = cohen_kappa_score(val_targets, discrete_preds, weights="quadratic")
+
+        if qwk > best_qwk_2:
+            best_qwk_2 = qwk
+            best_val_preds_2 = val_preds
+
+    # ==========================
+    # Ensemble Weight Optimization & Threshold Tuning
+    # ==========================
+    best_w = 0.5
+    final_validation_score = -1.0
+    best_rounder = None
+
+    for w in np.linspace(0.0, 1.0, 101):
+        blend_val_preds = w * best_val_preds_1 + (1.0 - w) * best_val_preds_2
+        rounder = OptimizedRounder()
+        rounder.fit(blend_val_preds, val_targets)
+        discrete_preds = rounder.predict(blend_val_preds)
+        score = cohen_kappa_score(val_targets, discrete_preds, weights="quadratic")
+
+        if score > final_validation_score:
+            final_validation_score = score
+            best_w = w
+            best_rounder = rounder
+
+    print(f"Optimal Model 1 Weight: {best_w:.2f}")
+    print(f"Final Validation Performance: {final_validation_score}")
+
+
+if __name__ == "__main__":
+    main()

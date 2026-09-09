@@ -1,0 +1,60 @@
+## Model name
+EVA-02 Large-Resolution Ordinal Multi-Threshold Network
+
+## Example Python code
+import torch
+import torch.nn as nn
+import timm
+import numpy as np
+
+class OrdinalClassificationLoss(nn.Module):
+    """Extended Binary Cross Entropy loss for ordinal targets: y > k for k in [0, K-2]"""
+    def __init__(self):
+        super().__init__()
+        self.bce = nn.BCEWithLogitsLoss()
+
+    def forward(self, logits, targets, num_classes=5):
+        # Target conversion to binary indicator vectors (B, K-1)
+        levels = torch.arange(num_classes - 1, device=targets.device).unsqueeze(0)
+        binary_targets = (targets.unsqueeze(1) > levels).float()
+        return self.bce(logits, binary_targets)
+
+class EVA02OrdinalModel(nn.Module):
+    def __init__(self, model_name="eva02_base_patch14_448.mim_in22k_ft_in22k_in1k", num_classes=5, pretrained=True):
+        super().__init__()
+        self.backbone = timm.create_model(model_name, pretrained=pretrained, num_classes=0)
+        in_features = self.backbone.num_features
+        # Output K-1 cumulative thresholds
+        self.classifier = nn.Sequential(
+            nn.Dropout(0.2),
+            nn.Linear(in_features, num_classes - 1)
+        )
+
+    def forward(self, x):
+        feat = self.backbone(x)
+        return self.classifier(feat)
+
+    def predict_class(self, x):
+        logits = self.forward(x)
+        probs = torch.sigmoid(logits)
+        # Ordinal class is the count of probabilities exceeding 0.5 threshold
+        return (probs > 0.5).sum(dim=1)
+
+# Example Usage
+model = EVA02OrdinalModel(pretrained=False, num_classes=5)
+criterion = OrdinalClassificationLoss()
+optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=0.05)
+
+images = torch.randn(4, 3, 448, 448)
+labels = torch.tensor([0, 2, 4, 1], dtype=torch.long)
+
+# Forward pass
+logits = model(images)
+loss = criterion(logits, labels)
+loss.backward()
+optimizer.step()
+
+# Inference
+with torch.no_grad():
+    predicted_grades = model.predict_class(images)
+    print(f"Predicted DR Grades: {predicted_grades.tolist()}")

@@ -1,0 +1,78 @@
+## Model name
+ConvNeXt V2 Regression with Optimized Thresholds (QWK)
+
+## Example Python code
+import torch
+import torch.nn as nn
+import timm
+import numpy as np
+from scipy.optimize import minimize
+from sklearn.metrics import cohen_kappa_score
+
+class ConvNeXtV2RegressionModel(nn.Module):
+    def __init__(self, model_name="convnextv2_base.fcmae_ft_in22k_in1k_384", pretrained=True, drop_rate=0.3):
+        super().__init__()
+        self.backbone = timm.create_model(model_name, pretrained=pretrained, num_classes=0, drop_rate=drop_rate)
+        in_features = self.backbone.num_features
+        self.head = nn.Sequential(
+            nn.LayerNorm(in_features),
+            nn.Linear(in_features, 1)
+        )
+
+    def forward(self, x):
+        feat = self.backbone(x)
+        return self.head(feat).squeeze(-1)
+
+class OptimizedRounder:
+    def __init__(self):
+        self.coef_ = [0.5, 1.5, 2.5, 3.5]
+
+    def _loss(self, coef, X, y):
+        X_p = np.copy(X)
+        for i, pred in enumerate(X_p):
+            if pred < coef[0]:
+                X_p[i] = 0
+            elif pred < coef[1]:
+                X_p[i] = 1
+            elif pred < coef[2]:
+                X_p[i] = 2
+            elif pred < coef[3]:
+                X_p[i] = 3
+            else:
+                X_p[i] = 4
+        return -cohen_kappa_score(y, X_p, weights="quadratic")
+
+    def fit(self, X, y):
+        res = minimize(self._loss, self.coef_, args=(X, y), method="Powell")
+        self.coef_ = res.x
+
+    def predict(self, X):
+        X_p = np.copy(X)
+        res = np.zeros_like(X_p, dtype=int)
+        res[X_p >= self.coef_[0]] = 1
+        res[X_p >= self.coef_[1]] = 2
+        res[X_p >= self.coef_[2]] = 3
+        res[X_p >= self.coef_[3]] = 4
+        return res
+
+# Example Training / Validation Step
+model = ConvNeXtV2RegressionModel(pretrained=False)
+criterion = nn.SmoothL1Loss()
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-2)
+
+images = torch.randn(8, 3, 384, 384)
+targets = torch.tensor([0.0, 1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 0.0])
+
+# Forward & Loss
+preds = model(images)
+loss = criterion(preds, targets)
+loss.backward()
+optimizer.step()
+
+# Fit Thresholds on Out-of-Fold Predictions
+val_preds = np.array([0.2, 1.3, 2.8, 3.7, 4.1, 0.9])
+val_labels = np.array([0, 1, 3, 4, 4, 1])
+rounder = OptimizedRounder()
+rounder.fit(val_preds, val_labels)
+final_classes = rounder.predict(val_preds)
+print(f"Optimized Thresholds: {rounder.coef_} -> Discrete Grades: {final_classes}")
