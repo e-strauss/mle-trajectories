@@ -314,16 +314,26 @@ def main(argv=None) -> int:
             if entry.get("status") != "ok" and not args.retry_failed:
                 continue
         todo.append((name, path))
+    # ``--limit`` only shortens *this* run: the pipelines it drops are pending,
+    # not cached, and counting them as cached made a batched sweep read as if it
+    # were nearly finished after its first batch.
+    pending = len(todo)
     if args.limit:
         todo = todo[:args.limit]
+    cached = len(pipelines) - pending
+    deferred = pending - len(todo)
 
     if args.list:
         print(f"store: {store_path}  ({len(store['pipelines'])} entry/entries)")
-        print(f"a sweep at {f'{args.sample_rows:,} rows' if args.sample_rows else 'full data'}"
-              f" would run {len(todo)} of {len(pipelines)}:")
+        where = f"{args.sample_rows:,} rows" if args.sample_rows else "full data"
+        print(f"a sweep at {where} would run {pending} of {len(pipelines)}"
+              f"{f' ({len(todo)} of them now, --limit {args.limit})' if deferred else ''}:")
         for name, path in pipelines:
             entry = store["pipelines"].get(name)
-            mark = "would run" if (name, path) in todo else "cached  "
+            mark = ("would run" if (name, path) in todo
+                    else "pending  " if entry is None or
+                         not is_fresh(entry, path, args.sample_rows, args.mem_mode)
+                    else "cached   ")
             print(f"  {mark}  {name:<24} {_fmt(entry) if entry else '—'}")
         return 0
 
@@ -333,7 +343,9 @@ def main(argv=None) -> int:
     _warn_about_data(run_in)
 
     print(f"{len(pipelines)} pipeline(s), {len(todo)} to measure "
-          f"({len(pipelines) - len(todo)} cached)", file=sys.stderr)
+          f"({cached} cached"
+          f"{f', {deferred} left for a later batch' if deferred else ''})",
+          file=sys.stderr)
     print(f"  run-in: {run_in}", file=sys.stderr)
     print(f"  store:  {store_path}", file=sys.stderr)
     if args.sample_rows:
