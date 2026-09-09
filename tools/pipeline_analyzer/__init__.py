@@ -27,4 +27,17 @@ __all__ = [
     "PARSERS", "Step", "Trajectory", "detect_type", "parse",
     "parse_mle_star", "parse_mlevolve",
     "build_html",
+    "default_store_path", "load_store",
 ]
+
+
+def __getattr__(name):
+    """Expose the runtime-store helpers without importing the module eagerly.
+
+    ``runtime`` is also run as ``python -m pipeline_analyzer.runtime``; importing
+    it here would make runpy warn that the module was already in sys.modules.
+    """
+    if name in ("default_store_path", "load_store"):
+        from . import runtime
+        return getattr(runtime, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

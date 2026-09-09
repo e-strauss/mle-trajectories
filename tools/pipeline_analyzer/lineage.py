@@ -34,6 +34,7 @@ class LineageNode:
     phase: str | None = None          # trajectory phase (Init / Ablation / Improve / ...)
     order: tuple | None = None        # chronological sort key, when known
     returncode: int | None = None
+    runtime: dict | None = None       # measured stats (pipeline_analyzer.runtime)
 
     @property
     def description(self):

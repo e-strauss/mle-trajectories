@@ -23,5 +23,7 @@ iteration, and what it kept.
   skrub DataOps pipeline (LLM does the translation, a validator gates it).
 - [`tools/pipeline_analyzer`](tools/pipeline_analyzer) — build the lineage of a
   run and emit an HTML report: tree, per-step operator DAG, per-step diff.
+  `pipeline_analyzer.runtime` executes the pipelines under stratum and caches
+  per-pipeline runtime stats in a json the report picks up.
 - [`tools/trajectory.py`](tools/trajectory.py) — tabular overview of one run
   (steps, scores, timings, parents).

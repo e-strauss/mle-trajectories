@@ -59,9 +59,115 @@ Options:
   ignored with `--trajectory`
 - `--out FILE`       output HTML (default `pipeline_evolution.html`)
 - `--unroll-choices` unroll `choose_from` into separate branches (default: folded)
+- `--runtime-stats FILE` measured runtimes to fold into the report (default:
+  `runtime_stats_<folder>.json` beside the pipelines folder, if it exists);
+  `--no-runtime-stats` ignores it
 - `--text`           also print a one-line-per-pipeline summary to stdout
 
 No dataset is required — see below.
+
+## Runtime statistics
+
+The report above is static analysis: it never executes a pipeline and needs no
+dataset. Actually *running* the pipelines is a separate command, because it needs
+the real data and is expensive:
+
+```bash
+# from tab_playground_dec_21/mle_star/
+python -m pipeline_analyzer.runtime \
+    --pipelines skrubify_openai --pipelines skrubify_openai/ensemble \
+    --run-in .. --sample-rows 100000
+```
+
+This writes `runtime_stats_skrubify_openai.json` beside the report, which
+`python -m pipeline_analyzer` then picks up automatically and renders as a
+per-pipeline runtime block plus a ranked table.
+
+Each pipeline runs in its own process, with `--run-in` as the working directory
+(the folder holding `input/`, which is what `./input/train.csv` in a pipeline
+resolves against). Scoring goes through stratum's scheduler
+(`stratum._api.grid_search`) with `stats=True`, so every operator is timed.
+
+Collected per pipeline: wall time of the scored grid search, time inside
+operator bodies, buffer-pool overhead, per-operator-type call counts and times,
+buffer-pool hit/spill counters, resident memory over time, the CV scores, and the
+splitter used.
+
+### Memory
+
+`memory_tracker.MemoryTracker` runs a side-car process that polls RSS every
+100 ms, so the store keeps the *shape* of a run and not just its high-water mark:
+peak (and when it happened), mean, start/end, and a downsampled curve the report
+draws as an area chart with the scored grid search shaded. The full sample series
+goes to `runtime_stats_<folder>.mem/<pipeline>.csv` (`time_sec,rss_mb`), written
+incrementally so a killed or OOM-ed pipeline still leaves its trace.
+
+Two peaks are stored and they mean different things:
+
+- `memory.peak_mb` — the sampled curve's maximum, for the pipeline's own
+  interpreter. Misses a spike that fits between two polls.
+- `max_rss_mb` — `getrusage`, covering this process *and* any worker processes an
+  estimator forked. This is the number to trust for "how much did it need".
+
+Over the 68 pipelines of `mle_star/skrubify_openai` the two agree exactly for
+half of them (median difference 0 MB, mean 5.8 MB), but 15 differ by more than
+10 MB and the worst, `train0_improve0`, by 90 MB (1361 vs 1452) — a peak that
+fell between two 100 ms polls. So: read the curve for shape, `max_rss_mb` for
+the high-water mark, and drop `--mem-interval` if you need the curve to catch
+short spikes.
+
+- `--mem-mode process|system|off` — `system` measures total memory in use, for a
+  workload that fans out over processes; `off` skips sampling
+- `--mem-interval SEC`, `--no-mem-csv`
+
+Turning tracking on backfills a store measured without it: an entry with no
+memory series is not considered fresh, so no `--force` is needed.
+
+Options:
+- `--run-in DIR`     working directory for the pipelines (default: nearest
+  ancestor of `--pipelines` holding `input/`)
+- `--sample-rows N`  cap `read_csv` at N rows. A full sweep on a large table can
+  take days; a sample makes it minutes. Stored per entry, and an entry measured
+  at a different sample size is re-measured rather than silently mixed in
+- `--only NAME …`, `--limit N`  measure a subset
+- `--timeout S`      per pipeline, killing the whole process group (default 3600)
+- `--force`, `--retry-failed`  re-measure cached / previously failed entries
+- `--no-stats`       skip stratum's per-operator timing (wall clock only, no
+  instrumentation overhead)
+- `--list`           show what the store holds and what a sweep would run
+- `--out FILE`       store path
+
+**The store is a cache.** A pipeline already measured with the same code
+(`code_sha1`) and the same sample size is skipped, and the store is rewritten
+after every pipeline, so a sweep can be interrupted and resumed, or filled in
+one pipeline at a time.
+
+### What the runner does and does not touch
+
+The pipeline files run unmodified. `make_grid_search` is intercepted so the
+scoring call goes to `stratum._api.grid_search` (what stratum's own patch does
+under `scheduler=True`) and the scheduler can be timed and queried for stats; the
+call returns a shim whose `results_` looks like skrub's pandas frame, because
+stratum's is a polars frame keyed `id`/`scores`, so each file's own reporting
+block still prints its score.
+
+`cv` is left to stratum: `grid_search._resolve_cv` prioritises an explicit `cv`
+and otherwise uses the splitter declared on the plan via
+`mark_as_X(cv=..., split_kwargs=...)`, resolving it through skrub when it is
+itself a DataOp. Earlier versions dropped the declared splitter and crashed on
+stratified ones ([#199](https://github.com/deem-data/stratum/issues/199), fixed
+in `834dc029`); the runner carried a workaround for both, now removed. Removing
+it reproduced scores bit-identically, so measurements taken through it remain
+comparable.
+
+**Known gap** ([#200](https://github.com/deem-data/stratum/issues/200)):
+stratum's scheduler only honours a bare string `scoring`. A plain callable, or
+`None`, is silently replaced by `mean_squared_error`; a `make_scorer(...)`
+scorer loses its kwargs; and `neg_*` scorers report with the opposite sign to
+sklearn (the ranking stays right, the value does not). Entries carry
+`scoring_honoured: false` where this applies — one pipeline here
+(`train9_improve0`) passes a callable, so its `best_score` is an MSE, not the
+accuracy it asked for. Its *runtime* numbers are unaffected.
 
 ## Trajectory mode
 
@@ -155,9 +261,15 @@ that in mind, or skrubify once and reuse the file for repeated code.
 - **Opaque nodes** (`ImplOp`, a raw `lambda` inside `apply_func`) are keyed by a
   repr with hex ids scrubbed; two distinct lambdas can look equal. Only affects
   `add_target_encoding`'s lambda (pipeline_22); harmless here.
+- **Runtime numbers are a measurement, not a property of the plan.** They depend
+  on the machine, the sample size, and `stats=True`'s own instrumentation
+  overhead (every operator is timed, so a plan with many cheap operators pays
+  more of it than one with a single expensive fit). Compare pipelines within one
+  store, not across stores.
 - **Dependencies:** `stratum` (imported as `stratum.optimizer.*`), `skrub`,
-  `graphviz` (python binding + the `dot` binary), and whatever the pipelines
-  themselves import (lightgbm, torch/skorch, …). A pipeline whose import fails is
+  `graphviz` (python binding + the `dot` binary), `psutil` (runtime memory
+  sampling only), and whatever the pipelines themselves import (lightgbm,
+  torch/skorch, …). A pipeline whose import fails is
   reported and skipped, not fatal.
 - Designed to move: it only imports `stratum.optimizer.*`, so it works both in
   this repo and later with stratum installed as a dependency. Point `--pipelines`

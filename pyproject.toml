@@ -8,6 +8,7 @@ dependencies = [
     "catboost>=1.2.10",
     "lightgbm>=4.7.0",
     "litellm>=1.97.0",
+    "psutil>=7.2.2",
     "skorch>=1.4.0",
     "stratum-ai",
     "tenacity>=8.0",   # litellm retry path (num_retries) imports it lazily
@@ -17,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 pipeline-analyzer = "pipeline_analyzer.__main__:main"
+pipeline-runtime = "pipeline_analyzer.runtime:main"
 skrubify = "skrubify.__main__:main"
 
 [build-system]
@@ -27,4 +29,4 @@ build-backend = "hatchling.build"
 packages = ["tools/pipeline_analyzer", "tools/skrubify"]
 
 [tool.uv.sources]
-stratum-ai = { git = "https://github.com/deem-data/stratum.git", rev = "8af6257e5eeb68b84a527f0bf0c1a32c808a3a66" }
+stratum-ai = { git = "https://github.com/deem-data/stratum.git", rev = "834dc02980379e8d6b97a04baeedc4ad3a888da6" }

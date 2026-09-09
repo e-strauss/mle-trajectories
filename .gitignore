@@ -13,3 +13,6 @@ __pycache__/
 *.tsv
 *.parquet
 *.tfevents
+# runtime stats collected by pipeline_analyzer.runtime: a project artifact that
+# belongs next to the report it feeds, unlike the raw data the *.json rule targets
+!**/runtime_stats_*.json

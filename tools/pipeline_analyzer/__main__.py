@@ -26,15 +26,34 @@ from .lineage import (build_lineage, build_lineage_from_trajectory,
                       fold_translation_variants)
 from .diff import diff_dags, is_structural_noop
 from .html import build_html
+from .runtime import default_store_path, load_store
 from .trajectory import PARSERS, parse as parse_trajectory
+
+
+def attach_runtime(lineage, stats_path: Path) -> list[str]:
+    """Hang each measured pipeline's runtime entry on its lineage node.
+
+    Only successful measurements are attached; a failed or timed-out run is left
+    off so the report shows "not measured" rather than a misleading zero.
+    """
+    entries = load_store(stats_path)["pipelines"]
+    attached = []
+    for name, node in lineage.nodes.items():
+        entry = entries.get(name)
+        if entry and entry.get("status") == "ok":
+            node.runtime = entry
+            attached.append(name)
+    return attached
 
 
 def _text_summary(lineage):
     phased = any(n.phase for n in lineage.nodes.values())
+    timed = any(n.runtime for n in lineage.nodes.values())
     w = max((len(n) for n in lineage.nodes), default=8) + 2
     head = f"{'pipeline':<{w}}{'phase':<10}" if phased else f"{'pipeline':<{w}}"
-    print(f"{head}{'score':>10}  {'Δ':>9}  change")
-    print("-" * (len(head) + 32))
+    rt_head = f"  {'runtime':>9}" if timed else ""
+    print(f"{head}{'score':>10}  {'Δ':>9}{rt_head}  change")
+    print("-" * (len(head) + 32 + len(rt_head)))
     for node in lineage.ordered():
         p = node.pipeline
         score = f"{node.score:.5f}" if node.score is not None else "—"
@@ -61,7 +80,11 @@ def _text_summary(lineage):
                 summary = ", ".join(bits) or "no change"
         label = (f"{node.name:<{w}}{(node.phase or ''):<10}" if phased
                  else f"{node.name:<{w}}")
-        print(f"{label}{score:>10}  {dstr:>9}  {summary}")
+        rt = ""
+        if timed:
+            wall = (node.runtime or {}).get("wall_s")
+            rt = f"  {('—' if wall is None else f'{wall:.1f}s'):>9}"
+        print(f"{label}{score:>10}  {dstr:>9}{rt}  {summary}")
 
 
 def main(argv=None):
@@ -87,6 +110,12 @@ def main(argv=None):
                          "byte-identical share one skrubified DAG, so a step that "
                          "changed nothing diffs as unchanged instead of showing "
                          "the rewrite-to-rewrite translation noise")
+    ap.add_argument("--runtime-stats", type=Path, default=None, metavar="FILE",
+                    help="runtime stats json from `python -m pipeline_analyzer.runtime` "
+                         "(default: runtime_stats_<folder>.json beside the pipelines "
+                         "folder, if present)")
+    ap.add_argument("--no-runtime-stats", action="store_true",
+                    help="ignore a runtime stats file even if one is found")
     ap.add_argument("--text", action="store_true", help="print a text summary too")
     args = ap.parse_args(argv)
 
@@ -140,6 +169,15 @@ def main(argv=None):
                     f"point --pipelines at the skrubified plans instead "
                     f"({', '.join(sibs)})")
         ap.error(f"no pipelines loaded from {where}{hint}")
+
+    if not args.no_runtime_stats:
+        stats_path = args.runtime_stats or default_store_path(pipe_dirs[0])
+        if stats_path.is_file():
+            measured = attach_runtime(lineage, stats_path)
+            print(f"  runtime stats: {len(measured)}/{len(lineage.nodes)} pipelines "
+                  f"from {stats_path.name}", file=sys.stderr)
+        elif args.runtime_stats:
+            ap.error(f"no such file: {stats_path}")
 
     ok = sum(1 for p in pipelines if p.ok)
     print(f"  {ok}/{len(pipelines)} extracted; "

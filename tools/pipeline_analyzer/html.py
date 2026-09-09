@@ -47,6 +47,15 @@ td.mono{overflow-wrap:anywhere}
 ul.ops{margin:6px 0;padding-left:18px}ul.ops li{margin:2px 0}
 .arrow{color:var(--muted)}
 .num{text-align:right;font-variant-numeric:tabular-nums}th.num{text-align:right}
+.rt{display:flex;flex-wrap:wrap;gap:6px 22px;margin:2px 0 10px;font-size:13px}
+.rt b{font-variant-numeric:tabular-nums;font-weight:600}
+.rt .k{color:var(--muted)}
+.memchart{width:100%;height:96px;display:block;margin:4px 0 2px}
+.memchart .area{fill:var(--accent);opacity:.16}
+.memchart .line{fill:none;stroke:var(--accent);stroke-width:1.6}
+.memchart .scored{fill:var(--fg);opacity:.05}
+.memchart .peak{stroke:var(--rem);stroke-width:1;stroke-dasharray:3 3}
+.memchart text{fill:var(--muted);font-size:10px}
 details.dagbox{margin:8px 0}
 details.dagbox>summary{list-style:none;cursor:pointer;user-select:none;display:flex;align-items:center;gap:6px;
  font-size:14px;margin:18px 0 8px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
@@ -150,7 +159,8 @@ def _pipeline_section(node, diff: DagDiff | None, lineage: Lineage):
 <div class="meta">
   <div><span class="score">{score}</span> {_delta_span(delta)} <span class="pill">{esc(node.phase or node.metric or 'score')}</span></div>
   <div class="muted">parent: {parent_link}</div>
-  {f'<div class="muted">{node.duration_s:.0f}s</div>' if node.duration_s else ''}
+  {f'<div class="muted">agent run: {node.duration_s:.0f}s</div>' if node.duration_s else ''}
+  {f'<div class="muted">stratum: {_fmt_secs(node.runtime["wall_s"])}</div>' if node.runtime else ''}
 </div>
 <p class="sub">{esc(node.description or '')}</p>
 """
@@ -184,12 +194,172 @@ def _pipeline_section(node, diff: DagDiff | None, lineage: Lineage):
     status = diff_status_map(diff) if (diff and diff.parent) else None
     svg = render_dag(p.dag, status)
     summary = f"Operator DAG{' (diff vs parent)' if status else ''} · {len(p.dag.nodes)} ops"
+    runtime = f'<div class="card">{_runtime_block(node.runtime)}</div>' if node.runtime else ""
     return head + f"""
-<div class="card">{hist}{changes}{grid}</div>
+<div class="card">{hist}{changes}{grid}</div>{runtime}
 <details class="dagbox">
 <summary>{summary}</summary>
 <div class="canvas">{svg}</div>
 </details>
+"""
+
+
+def _fmt_secs(seconds):
+    if seconds is None:
+        return "—"
+    if seconds >= 3600:
+        return f"{seconds / 3600:.2f}h"
+    if seconds >= 60:
+        return f"{seconds / 60:.1f}m"
+    return f"{seconds:.2f}s"
+
+
+def _memory_svg(mem: dict, width: int = 620, height: int = 96) -> str:
+    """RSS over the run as an inline area chart.
+
+    The shaded band is the scored grid search; anything left of it is plan
+    construction, so the ramp inside the band is the pipeline's own data loading
+    and fitting. Drawn by hand rather than via graphviz because it is a plot, and
+    it has to stay legible in both themes -- hence CSS variables for every colour.
+    """
+    curve = mem.get("curve") or []
+    if len(curve) < 2:
+        return ""
+    pad_l, pad_r, pad_t, pad_b = 44, 8, 10, 16
+    t_max = max(t for t, _ in curve) or 1.0
+    m_max = max(m for _, m in curve) or 1.0
+
+    def x(t):
+        return pad_l + (width - pad_l - pad_r) * (t / t_max)
+
+    def y(m):
+        return pad_t + (height - pad_t - pad_b) * (1 - m / m_max)
+
+    pts = " ".join(f"{x(t):.1f},{y(m):.1f}" for t, m in curve)
+    area = (f"{x(curve[0][0]):.1f},{y(0):.1f} {pts} "
+            f"{x(curve[-1][0]):.1f},{y(0):.1f}")
+
+    band = ""
+    if mem.get("scored_from_s") is not None and mem.get("scored_to_s") is not None:
+        x0, x1 = x(min(mem["scored_from_s"], t_max)), x(min(mem["scored_to_s"], t_max))
+        band = (f'<rect class="scored" x="{x0:.1f}" y="{pad_t}" '
+                f'width="{max(x1 - x0, 1):.1f}" height="{height - pad_t - pad_b}"/>')
+
+    peak_y = y(mem["peak_mb"]) if mem.get("peak_mb") else None
+    peak = ("" if peak_y is None else
+            f'<line class="peak" x1="{pad_l}" y1="{peak_y:.1f}" '
+            f'x2="{width - pad_r}" y2="{peak_y:.1f}"/>')
+
+    return f"""<svg class="memchart" viewBox="0 0 {width} {height}" role="img"
+ aria-label="resident memory over the run">
+{band}<polygon class="area" points="{area}"/><polyline class="line" points="{pts}"/>{peak}
+<text x="0" y="{pad_t + 4:.0f}">{mem['peak_mb']:.0f} MB</text>
+<text x="0" y="{height - pad_b:.0f}">0</text>
+<text x="{pad_l}" y="{height - 4}">0s</text>
+<text x="{width - pad_r}" y="{height - 4}" text-anchor="end">{t_max:.1f}s</text>
+</svg>"""
+
+
+def _runtime_block(rt: dict, top: int = 8):
+    """Measured stratum runtime for one pipeline: totals plus its heavy hitters.
+
+    ``wall_s`` is the whole scored grid search; ``op_time_s`` only the operator
+    bodies, so the gap between them is scheduling, splitting and scoring
+    overhead rather than lost time.
+    """
+    if not rt:
+        return ""
+    mem = rt.get("memory") or {}
+    fields = [("wall", _fmt_secs(rt.get("wall_s"))),
+              ("in operators", _fmt_secs(rt.get("op_time_s"))),
+              ("buffer pool", _fmt_secs(rt.get("buffer_overhead_s"))),
+              ("peak RSS", f"{rt['max_rss_mb']:.0f} MB" if rt.get("max_rss_mb") else "—"),
+              ("op calls", rt.get("n_op_calls") or "—")]
+    if mem.get("mean_mb") is not None:
+        fields.insert(4, ("mean RSS", f"{mem['mean_mb']:.0f} MB"))
+    pool = rt.get("pool") or {}
+    if pool.get("hit_rate") is not None:
+        fields.append(("pool hits", f"{100 * pool['hit_rate']:.0f}%"))
+    if rt.get("best_score") is not None:
+        # This run's own score, which is not the agent's score above: it comes
+        # from stratum's scheduler and, on a sampled sweep, from fewer rows.
+        n = len(rt.get("scores") or ())
+        label = "best of %d measured" % n if n > 1 else "score measured"
+        fields.append((label, f"{rt['best_score']:.5f}"))
+    strip = "".join(f'<span><span class="k">{esc(k)}</span> <b>{esc(v)}</b></span>'
+                    for k, v in fields)
+
+    ops = rt.get("ops") or []
+    total = sum(r["time_s"] for r in ops) or 1.0
+    rows = "".join(
+        f'<tr><td class=mono>{esc(r["op"])}</td><td class=num>{r["count"]}</td>'
+        f'<td class=num>{r["time_s"]:.3f}</td>'
+        f'<td class=num>{100 * r["time_s"] / total:.1f}%</td></tr>'
+        for r in ops[:top])
+    rest = len(ops) - top
+    if rest > 0:
+        other = sum(r["time_s"] for r in ops[top:])
+        rows += (f'<tr><td class="muted">{rest} more operator type(s)</td>'
+                 f'<td class=num></td><td class=num>{other:.3f}</td>'
+                 f'<td class=num>{100 * other / total:.1f}%</td></tr>')
+    table = (f"<table><tr><th>operator</th><th class=num>calls</th>"
+             f"<th class=num>time (s)</th><th class=num>share</th></tr>{rows}</table>")
+
+    note = []
+    if rt.get("sample_rows"):
+        note.append(f"measured on a {rt['sample_rows']:,}-row sample")
+    if rt.get("cv"):
+        note.append(f"cv: {rt['cv']}")
+    sub = (f'<p class="muted" style="margin:6px 0 0">{esc(" · ".join(note))}</p>'
+           if note else "")
+    chart = _memory_svg(mem)
+    if chart:
+        chart = (f"<h3>Resident memory</h3>{chart}"
+                 f'<p class="muted" style="margin:0">Sampled every '
+                 f"{mem['interval_s']}s over {mem['duration_s']:.1f}s "
+                 f"({mem['n_samples']} samples); shaded band is the scored grid "
+                 f"search, peak {mem['peak_mb']:.0f} MB at "
+                 f"{mem['peak_at_s']:.1f}s.</p>")
+    return (f'<h3>Measured runtime (stratum)</h3><div class="rt">{strip}</div>'
+            f"{table}{sub}{chart}")
+
+
+def _runtime_section(lineage: Lineage):
+    """One table ranking every measured pipeline by wall time."""
+    measured = [n for n in lineage.ordered() if n.runtime]
+    if not measured:
+        return ""
+    measured.sort(key=lambda n: -(n.runtime.get("wall_s") or 0))
+    rows = "".join(
+        "<tr>"
+        f'<td><a href="#pipe-{esc(n.name)}">{esc(n.name)}</a></td>'
+        f'<td>{esc(n.phase or "")}</td>'
+        f'<td class=num>{_fmt_secs(n.runtime.get("wall_s"))}</td>'
+        f'<td class=num>{_fmt_secs(n.runtime.get("op_time_s"))}</td>'
+        f'<td class=num>{n.runtime.get("max_rss_mb") or 0:.0f}</td>'
+        f'<td class=num>{(n.runtime.get("memory") or {}).get("mean_mb") or 0:.0f}</td>'
+        f'<td class=num>{n.runtime.get("n_op_calls") or 0}</td>'
+        f'<td class=num>{"—" if n.score is None else f"{n.score:.5f}"}</td>'
+        "</tr>"
+        for n in measured)
+    samples = {n.runtime.get("sample_rows") for n in measured}
+    note = ""
+    if samples - {None}:
+        shown = ", ".join(f"{s:,}" if s else "full data" for s in sorted(
+            samples, key=lambda s: (s is None, s)))
+        note = (f'<p class="muted">Rows read per pipeline: {shown}. '
+                f"Wall time is the scored grid search only, excluding process "
+                f"start-up and plan construction.</p>")
+    total = sum(n.runtime.get("wall_s") or 0 for n in measured)
+    return f"""
+<h2 id="agg-runtime">Measured runtime — {len(measured)} pipeline(s), {_fmt_secs(total)} total</h2>
+{note}
+<div class="card"><table>
+<tr><th>pipeline</th><th>phase</th><th class=num>wall</th><th class=num>operators</th>
+<th class=num>peak MB</th><th class=num>mean MB</th><th class=num>op calls</th>
+<th class=num>score</th></tr>
+{rows}
+</table></div>
 """
 
 
@@ -295,6 +465,8 @@ def build_html(lineage: Lineage, *, title="Pipeline evolution", subtitle="", gen
 <div class="wrap">
 <h1>{esc(title)}</h1>
 <p class="sub">{esc(subtitle)} · {ok}/{len(ordered)} pipelines analyzed · logical IR · {esc(generated_note)} {ts}</p>
+
+{_runtime_section(lineage)}
 
 {_aggregate_section(lineage)}
 
