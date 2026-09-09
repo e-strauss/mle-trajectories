@@ -1,0 +1,82 @@
+/* Explorer: pipeline picker + merged DAG canvas + node inspector. */
+.pa-explorer{display:grid;grid-template-columns:300px 1fr;gap:14px;align-items:start}
+@media(max-width:900px){.pa-explorer{grid-template-columns:1fr}}
+
+.pa-side{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
+.pa-side h3{margin:0 0 8px}
+.pa-acts{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px}
+.pa-acts button,.pa-tools button,button.mini{font:inherit;font-size:12px;cursor:pointer;
+ background:var(--chip);color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:2px 8px}
+.pa-acts button:hover,.pa-tools button:hover,button.mini:hover{border-color:var(--accent);color:var(--accent)}
+#pa-filter{width:100%;font:inherit;font-size:12px;padding:3px 7px;margin-bottom:8px;
+ background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:6px}
+#pa-count{font-size:12px;color:var(--muted)}
+
+#pa-list{max-height:440px;overflow:auto;margin-top:6px;border-top:1px solid var(--border)}
+.pa-group{display:flex;align-items:center;gap:6px;font-size:11px;text-transform:uppercase;
+ letter-spacing:.04em;color:var(--muted);margin:10px 0 3px}
+.pa-group button.mini{padding:0 5px;font-size:11px;text-transform:none;letter-spacing:0}
+.pa-row{display:grid;grid-template-columns:16px 10px 1fr auto auto 26px 14px;gap:6px;
+ align-items:center;padding:2px 2px;font-size:12px;border-radius:5px;cursor:pointer}
+.pa-row:hover{background:var(--chip)}
+.pa-row input{margin:0;cursor:pointer}
+.pa-row .nm{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pa-row .sc{font-variant-numeric:tabular-nums;color:var(--muted)}
+.pa-row .dl{font-variant-numeric:tabular-nums;font-size:11px}
+.pa-row .dl.up{color:var(--add)}.pa-row .dl.down{color:var(--rem)}.pa-row .dl.flat{color:var(--muted)}
+.pa-row .ops{font-size:11px;color:var(--muted);text-align:right}
+.pa-row .jump{opacity:0;font-size:11px}
+.pa-row:hover .jump{opacity:1}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+
+.pa-main{min-width:0}
+.pa-tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;font-size:12px}
+.pa-tools select{font:inherit;font-size:12px;background:var(--bg);color:var(--fg);
+ border:1px solid var(--border);border-radius:6px;padding:2px 6px}
+#pa-modehint{color:var(--flat)}
+#pa-stats{font-size:12px;color:var(--muted);margin:6px 0 0}
+.pa-canvas{background:var(--canvas);border:1px solid var(--border);border-radius:8px;
+ height:620px;overflow:hidden;touch-action:none}
+#pa-svg{width:100%;height:100%;display:block;cursor:grab}
+#pa-svg:active{cursor:grabbing}
+.pa-e{fill:none;stroke:#98a2b3;stroke-width:1.2}
+.pa-e.gone{stroke:#dc2626;stroke-dasharray:4 3;opacity:.75}
+.pa-n text{font:11px Helvetica,Arial,sans-serif;fill:#1a1d24;text-anchor:middle;pointer-events:none}
+.pa-n{cursor:pointer}
+.pa-n:hover rect{stroke-width:2.4}
+.pa-n.hl rect{stroke:#111827;stroke-width:2.6}
+.pa-n.picked rect{stroke:#111827;stroke-width:3;stroke-dasharray:none}
+
+/* Full screen: the native Fullscreen API where it is available, otherwise the
+   same layout as a fixed overlay (``.pa-fs``, set by explorer.js). Both give the
+   graph the whole viewport, which is the only way a 600-node union DAG is
+   legible; the picker stays alongside so pipelines can still be ticked. */
+#pa-explorer:fullscreen,#pa-explorer.pa-fs{position:fixed;inset:0;z-index:60;margin:0;
+ padding:12px;height:100vh;max-height:100vh;overflow:hidden;background:var(--bg);align-items:stretch}
+#pa-explorer:fullscreen .pa-side,#pa-explorer.pa-fs .pa-side{overflow:auto}
+#pa-explorer:fullscreen #pa-list,#pa-explorer.pa-fs #pa-list{max-height:none}
+#pa-explorer:fullscreen .pa-main,#pa-explorer.pa-fs .pa-main{display:flex;
+ flex-direction:column;min-height:0}
+#pa-explorer:fullscreen .pa-canvas,#pa-explorer.pa-fs .pa-canvas{flex:1 1 auto;
+ min-height:0;height:auto}
+#pa-explorer:fullscreen #pa-inspect,#pa-explorer.pa-fs #pa-inspect{flex:none;
+ max-height:30vh;overflow:auto}
+
+#pa-inspect{margin-top:10px}
+.pa-inspect-head{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.pa-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.pa-chip{display:inline-flex;align-items:center;gap:5px;background:var(--chip);
+ border:1px solid var(--border);border-radius:20px;padding:1px 9px 1px 6px;font-size:12px}
+.pa-chip.on{border-color:var(--accent)}
+.pa-chip input{margin:0;cursor:pointer}
+.pa-chip a{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+
+/* Lineage tree: graphviz SVG, with selection state driven by the explorer. */
+[data-lin] > path,[data-lin] > polygon,[data-lin] > ellipse{transition:stroke-width .1s}
+[data-lin]:hover > path,[data-lin]:hover > polygon,[data-lin]:hover > ellipse{stroke-width:2.6}
+[data-lin].sel > path,[data-lin].sel > polygon,[data-lin].sel > ellipse{stroke:#111827;stroke-width:3.4}
+/* A 68-step tree is taller than the viewport; keep it in its own scroll box so
+   the explorer below it stays reachable. */
+[data-tree]{max-height:78vh}
+.pa-treemodes{display:flex;gap:14px;font-size:12px;color:var(--muted);margin:0 0 8px}
+.pa-treemodes label{display:inline-flex;gap:5px;align-items:center;cursor:pointer}

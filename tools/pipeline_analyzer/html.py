@@ -5,8 +5,11 @@ import html as _html
 import statistics
 from datetime import datetime
 
+from pathlib import Path
+
 from .diff import DagDiff, diff_dags
 from .lineage import Lineage
+from .merged import build_merged
 from .render import render_dag, diff_status_map, render_lineage
 
 _CSS = """
@@ -65,22 +68,24 @@ details.dagbox[open]>summary::before{transform:rotate(90deg)}
 details.dagbox>summary:hover{color:var(--fg)}
 """
 
-_THEME_JS = """
-<script>document.querySelectorAll('svg a').forEach(function(a){
- a.addEventListener('click',function(e){var h=a.getAttribute('xlink:href')||a.getAttribute('href');
- if(h&&h[0]==='#'){e.preventDefault();var el=document.querySelector(h);if(el)el.scrollIntoView({behavior:'smooth'});}});});
-</script>
-"""
+def _asset(name: str) -> str:
+    """Read an inlined asset (``explorer.css`` / ``explorer.js``) shipped beside
+    this module. They live in their own files rather than as Python strings so
+    they stay editable as CSS/JS."""
+    return (Path(__file__).parent / name).read_text(encoding="utf-8")
 
 
 def esc(x):
     return _html.escape(str(x)) if x is not None else ""
 
 
-def _delta_span(delta):
+def _delta_span(delta, improvement=None):
+    """The raw delta, coloured by whether it was an *improvement* -- which is not
+    the same sign when the metric is one where lower is better."""
     if delta is None:
         return '<span class="delta flat">—</span>'
-    cls = "up" if delta > 0.0005 else "down" if delta < -0.0005 else "flat"
+    up = delta if improvement is None else improvement
+    cls = "up" if up > 0.0005 else "down" if up < -0.0005 else "flat"
     sign = "+" if delta >= 0 else ""
     return f'<span class="delta {cls}">{sign}{delta:.4f}</span>'
 
@@ -146,7 +151,8 @@ def _legend():
         for l, c, d in items) + "</div>"
 
 
-def _pipeline_section(node, diff: DagDiff | None, lineage: Lineage):
+def _pipeline_section(node, diff: DagDiff | None, lineage: Lineage,
+                      index: int, show_dag: bool):
     p = node.pipeline
     anchor = f"pipe-{node.name}"
     parent_link = (f'<a href="#pipe-{esc(node.parent)}">{esc(node.parent)}</a>'
@@ -154,10 +160,13 @@ def _pipeline_section(node, diff: DagDiff | None, lineage: Lineage):
     score = f"{node.score:.5f}" if node.score is not None else "—"
     delta = lineage.delta_score(node.name)
 
+    focus = (f'<a class="pill focus" href="#pa-explorer" data-focus="{index}" '
+             f'title="tick only this pipeline in the explorer, coloured against '
+             f'its parent">show in explorer ↗</a>')
     head = f"""
-<h2 id="{anchor}">{esc(node.name)}</h2>
+<h2 id="{anchor}">{esc(node.name)} {focus}</h2>
 <div class="meta">
-  <div><span class="score">{score}</span> {_delta_span(delta)} <span class="pill">{esc(node.phase or node.metric or 'score')}</span></div>
+  <div><span class="score">{score}</span> {_delta_span(delta, lineage.improvement(node.name))} <span class="pill">{esc(node.phase or node.metric or 'score')}</span></div>
   <div class="muted">parent: {parent_link}</div>
   {f'<div class="muted">agent run: {node.duration_s:.0f}s</div>' if node.duration_s else ''}
   {f'<div class="muted">stratum: {_fmt_secs(node.runtime["wall_s"])}</div>' if node.runtime else ''}
@@ -191,16 +200,21 @@ def _pipeline_section(node, diff: DagDiff | None, lineage: Lineage):
         ghead = "".join(f"<th>{esc(k)}</th>" for k in node.grid[0].keys())
         grid = f"<h3>choose_from grid (from results.json)</h3><table><tr>{ghead}</tr>{grows}</table>"
 
-    status = diff_status_map(diff) if (diff and diff.parent) else None
-    svg = render_dag(p.dag, status)
-    summary = f"Operator DAG{' (diff vs parent)' if status else ''} · {len(p.dag.nodes)} ops"
     runtime = f'<div class="card">{_runtime_block(node.runtime)}</div>' if node.runtime else ""
-    return head + f"""
-<div class="card">{hist}{changes}{grid}</div>{runtime}
+    dag = ""
+    if show_dag:
+        status = diff_status_map(diff) if (diff and diff.parent) else None
+        summary = (f"Operator DAG{' (diff vs parent)' if status else ''} · "
+                   f"{len(p.dag.nodes)} ops")
+        dag = f"""
 <details class="dagbox">
 <summary>{summary}</summary>
-<div class="canvas">{svg}</div>
+{_legend()}
+<div class="canvas">{render_dag(p.dag, status)}</div>
 </details>
+"""
+    return head + f"""
+<div class="card">{hist}{changes}{grid}</div>{runtime}{dag}
 """
 
 
@@ -443,41 +457,152 @@ def _aggregate_section(lineage: Lineage):
     return out
 
 
-def build_html(lineage: Lineage, *, title="Pipeline evolution", subtitle="", generated_note=""):
+def _tree_section(lineage: Lineage, merged):
+    """The search tree, in one or two pre-rendered colourings.
+
+    Both are rendered server-side (graphviz lays out trees better than anything
+    worth hand-writing) and toggled client-side, so switching colouring costs
+    nothing at view time. Clicking a node ticks that pipeline in the explorer.
+    """
+    trees = [("delta", "score vs parent", render_lineage(lineage, color_by="delta"))]
+    if merged.phase_colors:
+        trees.append(("phase", "search phase",
+                      render_lineage(lineage, color_by="phase",
+                                     phase_colors=merged.phase_colors)))
+    modes = ""
+    if len(trees) > 1:
+        radios = "".join(
+            f'<label><input type="radio" name="pa-tree" value="{key}"'
+            f'{" checked" if i == 0 else ""}>{esc(label)}</label>'
+            for i, (key, label, _) in enumerate(trees))
+        phases = "".join(
+            f'<span><span class="dot" style="background:{c}"></span>{esc(ph)}</span>'
+            for ph, c in merged.phase_colors.items())
+        modes = (f'<div class="pa-treemodes">colour by: {radios}</div>'
+                 f'<div class="legend">{phases}</div>')
+    panes = "".join(
+        f'<div class="canvas" data-tree="{key}"{"" if i == 0 else " hidden"}>{svg}</div>'
+        for i, (key, _, svg) in enumerate(trees))
+    lower = " (lower is better)" if lineage.lower_is_better else ""
+    return f"""
+<h2 id="tree" style="border:0">Search tree</h2>
+<p class="muted">Every step the agent ran, linked to the step it was derived from.
+Fill: green improved on the parent&#160;· amber flat&#160;· red regressed{lower}.
+<b>Click a node</b> to tick that pipeline in the explorer below (a thick outline
+marks the ticked ones); shift-click takes its whole subtree.</p>
+{modes}
+{panes}
+"""
+
+
+def _explorer_section(merged):
+    """Picker + merged DAG + node inspector. All behaviour lives in
+    ``explorer.js``; this is the markup it binds to."""
+    share = merged.share_histogram()
+    n_nodes = len(merged.nodes)
+    n_pipes = sum(1 for p in merged.pipelines if p["ok"])
+    unique = share.get(1, 0)
+    return f"""
+<h2 id="explorer" style="border:0">Operator explorer</h2>
+<p class="muted">One graph for the whole run: the {n_pipes} analyzed pipelines
+hold {sum(p["ops"] for p in merged.pipelines)} operations, which merge into
+<b>{n_nodes}</b> distinct ones &#8212; an operation two pipelines share is one
+node here, keyed by the content signature of its whole sub-computation, so it is
+the same node only if it really is the same computation. {unique} of them occur in
+a single pipeline. Tick pipelines to overlay them.</p>
+<div class="pa-explorer" id="pa-explorer">
+  <div class="pa-side">
+    <h3>Pipelines &#160;<span id="pa-count"></span></h3>
+    <div class="pa-acts">
+      <button id="pa-all">all</button>
+      <button id="pa-none">none</button>
+      <button id="pa-invert">invert</button>
+      <button id="pa-best" title="root &#8594; best-scoring pipeline">best path</button>
+      <button id="pa-roots">roots</button>
+    </div>
+    <input id="pa-filter" placeholder="filter by name&#8230;">
+    <div id="pa-list"></div>
+  </div>
+  <div class="pa-main">
+    <div class="pa-tools">
+      <label>colour: <select id="pa-mode">
+        <option value="share">how widely shared</option>
+        <option value="pipe">by pipeline</option>
+        <option value="diff">diff vs parent</option>
+      </select></label>
+      <button id="pa-zin" title="zoom in">+</button>
+      <button id="pa-zout" title="zoom out">&#8722;</button>
+      <button id="pa-fit">reset view</button>
+      <button id="pa-full" title="give the graph the whole window (Esc to leave)">full screen</button>
+      <span class="muted">scroll to zoom, drag to pan, click an operation for its
+      pipelines</span>
+      <span id="pa-modehint"></span>
+    </div>
+    <div class="legend" id="pa-legend"></div>
+    <div class="pa-canvas"><svg id="pa-svg"></svg></div>
+    <p id="pa-stats"></p>
+    <div class="card" id="pa-inspect"></div>
+  </div>
+</div>
+"""
+
+
+def _payload(merged) -> str:
+    """The explorer's data, inlined as JSON. ``</`` is escaped so no label can
+    close the script element early."""
+    return merged.to_json().replace("</", "<\\/")
+
+
+def build_html(lineage: Lineage, *, title="Pipeline evolution", subtitle="",
+               generated_note="", per_pipeline_dags=False):
     ordered = lineage.ordered()
     ok = sum(1 for n in ordered if n.pipeline.ok)
+    merged = build_merged(lineage)
+
     sections = []
-    for node in ordered:
+    for i, node in enumerate(ordered):
         parent = lineage.nodes.get(node.parent) if node.parent else None
         diff = None
         if node.pipeline.ok:
             parent_dag = parent.pipeline.dag if (parent and parent.pipeline.ok) else None
             diff = diff_dags(parent_dag, node.pipeline.dag)
-        sections.append(_pipeline_section(node, diff, lineage))
+        sections.append(_pipeline_section(node, diff, lineage, i, per_pipeline_dags))
 
-    lineage_svg = render_lineage(lineage)
+    nav = " · ".join([
+        '<a href="#tree">search tree</a>',
+        '<a href="#explorer">operator explorer</a>',
+        '<a href="#agg-logical">operator statistics</a>',
+        *(['<a href="#agg-runtime">measured runtime</a>']
+          if any(n.runtime for n in ordered) else []),
+        f'<a href="#{esc(ordered[0].name) if ordered else ""}">per-pipeline detail</a>',
+    ])
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
     return f"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{esc(title)}</title>
-<style>{_CSS}</style>
+<style>{_CSS}
+{_asset("explorer.css")}</style>
 <div class="wrap">
 <h1>{esc(title)}</h1>
 <p class="sub">{esc(subtitle)} · {ok}/{len(ordered)} pipelines analyzed · logical IR · {esc(generated_note)} {ts}</p>
+<p class="sub">{nav}</p>
+
+{_tree_section(lineage, merged)}
+
+{_explorer_section(merged)}
 
 {_runtime_section(lineage)}
 
 {_aggregate_section(lineage)}
 
-<h2 style="border:0">Lineage</h2>
-<p class="muted">Node fill: green improved · amber flat · red regressed vs parent. Click a node to jump to it.</p>
-<div class="canvas">{lineage_svg}</div>
-
-<h2 style="border:0;margin-top:26px">Legend (per-pipeline DAG diff)</h2>
-{_legend()}
+<h2 style="border:0;margin-top:26px">Per-pipeline detail</h2>
+<p class="muted">What each step changed against its parent, in counts, operations
+and estimator hyperparameters. Use “show in explorer” on any of them to see the
+same diff on the graph.</p>
 
 {''.join(sections)}
 </div>
-{_THEME_JS}
+<script type="application/json" id="pa-data">{_payload(merged)}</script>
+<script>{_asset("explorer.js")}</script>
 """

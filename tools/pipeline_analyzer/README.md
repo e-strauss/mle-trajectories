@@ -2,10 +2,17 @@
 
 Analyze how a series of **skrub DataOps pipelines** evolves across iterations, by
 extracting each pipeline's **stratum logical operator DAG** and diffing every
-pipeline against its `PARENT`. Emits a self-contained, theme-aware HTML report:
-a lineage tree plus, per pipeline, a diff-colored operator DAG and a summary of
-what stayed the same and what changed (structurally *and* in estimator
-hyperparameters).
+pipeline against its `PARENT`. Emits a self-contained, theme-aware HTML report
+with three parts:
+
+1. **the search tree** — every step the agent ran, linked to the step it came
+   from, colored by score-vs-parent or by search phase,
+2. **the operator explorer** — *one* graph for the whole run: every pipeline's
+   DAG overlaid, an operation shared by several pipelines collapsed onto a single
+   node. Tick pipelines to add them; click an operation to see which pipelines
+   carry it,
+3. **per-pipeline detail** — what each step changed against its parent,
+   structurally *and* in estimator hyperparameters.
 
 ## Run
 
@@ -62,9 +69,69 @@ Options:
 - `--runtime-stats FILE` measured runtimes to fold into the report (default:
   `runtime_stats_<folder>.json` beside the pipelines folder, if it exists);
   `--no-runtime-stats` ignores it
+- `--per-pipeline-dags` also render each pipeline's own DAG as a static graphviz
+  SVG under its section (default off — the explorer covers this interactively,
+  and on a 68-pipeline run those SVGs were ~70% of the file)
 - `--text`           also print a one-line-per-pipeline summary to stdout
 
 No dataset is required — see below.
+
+## The report
+
+### Search tree
+
+One node per step, `score (Δ vs parent)`, edges pointing from the step that was
+derived from which. Two colorings, switchable in the page: **score vs parent**
+(green improved / amber flat / red regressed — oriented by the trajectory's own
+metric direction, so a lower-is-better run reads the right way round) and
+**search phase** (Init / Ablation / Improve / … in the same colors the explorer's
+pipeline list uses).
+
+Clicking a node ticks that pipeline in the explorer; shift-clicking takes its
+whole subtree. Ticked steps carry a thick outline, so the tree doubles as the
+map of what the graph below is showing.
+
+### Operator explorer
+
+The union of every pipeline's DAG. Nodes are keyed by the **content signature**
+of the whole sub-computation below them (`dag.py`), so two pipelines share a node
+only when they really do compute the same thing — this is the same key the diffs
+use, and it is what makes overlaying meaningful rather than merely name-matched.
+
+- **which pipelines** — tick them in the left-hand list (grouped by phase, with
+  score, Δ and operator count; `all` / `none` / `invert` / `best path` /
+  `roots`, plus a name filter). The default selection is the **best path**: root
+  → the best-scoring pipeline. Hovering a row outlines that pipeline's
+  operations in the graph.
+- **colors** — *how widely shared*: an operation every ticked pipeline has is
+  neutral gray, and the fewer pipelines carry it the hotter it reads (so what
+  the run actually varied is what lights up); *by pipeline*: an operation unique
+  to one ticked pipeline takes that pipeline's color (the dots in the list are
+  the key), shared ones stay gray — the useful mode for comparing two or three;
+  *diff vs parent*: with exactly one pipeline ticked, the same green/amber/red
+  diff coloring the per-pipeline sections describe, parent-only operations drawn
+  dashed.
+- **which pipelines share an operation** — click it. The inspector names the
+  operation and lists every pipeline containing it, collapsed by default when
+  the list is long. Each entry is a tick (to add/remove it from the graph) plus
+  a link to its section.
+- scroll to zoom, drag to pan, `+` / `−` / `reset view`, and **full screen** —
+  which is the answer to a large union DAG: the graph takes the whole window
+  with the picker still beside it (native Fullscreen API, falling back to a
+  fixed overlay; `Esc` leaves).
+
+Layout is done in the browser (`explorer.js`: layered/Sugiyama — longest-path
+layering tightened toward the sinks, dummy nodes for long edges, barycenter
+ordering keeping the crossing-minimal pass, then order-preserving coordinate
+relaxation), because a graphviz layout fixed at generation time would scatter a
+three-pipeline selection across a canvas sized for all 68. It lays out 654 nodes
+(the 68-pipeline run, everything ticked) in ~100 ms.
+
+### Per-pipeline detail
+
+Operator counts vs parent, the added/removed operations, estimator swaps and
+hyperparameter deltas, the measured runtime block — and *show in explorer*,
+which ticks that pipeline alone and switches the graph to diff coloring.
 
 ## Runtime statistics
 
@@ -244,8 +311,14 @@ that in mind, or skrubify once and reuse the file for repeated code.
    reported separately, aligned by logical family.
 4. **Lineage** (`lineage.py`) — build the `PARENT` tree, annotate with scores from
    `results.json`.
-5. **Render** (`render.py`, `html.py`) — Graphviz → inline SVG for DAGs (diff
-   coloring) and the lineage tree; assembled into one self-contained HTML file.
+5. **Merge** (`merged.py`) — union every pipeline's DAG by signature into one
+   node list (topologically ordered, each node carrying the pipelines that
+   contain it) and serialize it as the explorer's JSON payload; ~100 KB for the
+   68-pipeline run.
+6. **Render** (`render.py`, `html.py`) — graphviz → inline SVG for the search
+   tree (both colorings, toggled in the page); the explorer's markup, CSS
+   (`explorer.css`) and layout/interaction code (`explorer.js`) inlined into one
+   self-contained HTML file. The merged DAG itself is laid out client-side.
 
 ## Notes / limitations
 
@@ -266,6 +339,10 @@ that in mind, or skrubify once and reuse the file for repeated code.
   overhead (every operator is timed, so a plan with many cheap operators pays
   more of it than one with a single expensive fit). Compare pipelines within one
   store, not across stores.
+- **The explorer needs JavaScript.** It is one inlined script and one inlined
+  JSON payload, no network access, but with scripting off the report is the
+  search tree plus the text sections (`--per-pipeline-dags` brings the static
+  per-pipeline DAGs back).
 - **Dependencies:** `stratum` (imported as `stratum.optimizer.*`), `skrub`,
   `graphviz` (python binding + the `dot` binary), `psutil` (runtime memory
   sampling only), and whatever the pipelines themselves import (lightgbm,

@@ -6,6 +6,8 @@ the page, so node fills are chosen to read on a light canvas in either page them
 """
 from __future__ import annotations
 
+import re
+
 from graphviz import Digraph
 
 from .dag import Dag
@@ -84,34 +86,90 @@ def diff_status_map(diff: DagDiff) -> dict[str, str]:
 
 
 # --- lineage tree ------------------------------------------------------------
-def _score_fill(delta):
-    if delta is None:
+def _score_fill(improvement):
+    """Fill for a lineage node, keyed on *improvement* (already re-signed by
+    :meth:`Lineage.improvement`, so positive is better whatever the metric)."""
+    if improvement is None:
         return "#e2e8f0"
-    if delta > 0.0005:
+    if improvement > 0.0005:
         return "#b7f0c6"     # improved
-    if delta < -0.0005:
+    if improvement < -0.0005:
         return "#f7c9c9"     # regressed
     return "#fde6b0"         # flat
 
 
-def render_lineage(lineage: Lineage, anchor_prefix: str = "pipe-") -> str:
+def _tint(hex_color: str, t: float = 0.82) -> str:
+    """``hex_color`` mixed toward white, for a fill that leaves the pure colour
+    to the border (and keeps the label readable)."""
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+    m = lambda c: round(c + (255 - c) * t)  # noqa: E731
+    return f"#{m(r):02x}{m(g):02x}{m(b):02x}"
+
+
+# graphviz XML-escapes a hyphen in an id (``lin-0`` -> ``lin&#45;0``), hence the
+# separator-free ``lin0`` ids.
+_NODE_ID = re.compile(r'(<g id="lin(\d+)" class="node">)\s*<title>[^<]*</title>')
+
+
+def _annotate_nodes(svg: str, descriptions: dict) -> str:
+    """Post-process graphviz's SVG so the explorer can drive the tree.
+
+    graphviz has no way to emit arbitrary attributes, so the ``lin-<i>`` node ids
+    it does emit are rewritten here into a ``data-lin`` hook (clicks, selection
+    highlighting -- see ``explorer.js``), and the ``<title>`` -- which the browser
+    shows as the hover tooltip and which graphviz fills with the node name -- is
+    replaced by the step's rationale where there is one.
+    """
+    def sub(m):
+        i = int(m.group(2))
+        tip = descriptions.get(i) or ""
+        return f'{m.group(1)[:-1]} data-lin="{i}"><title>{_xml_escape(tip)}</title>'
+    return _NODE_ID.sub(sub, svg)
+
+
+def _xml_escape(s: str) -> str:
+    return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+             .replace('"', "&quot;"))
+
+
+def render_lineage(lineage: Lineage, *, color_by: str = "delta",
+                   phase_colors: dict | None = None) -> str:
+    """The search tree.
+
+    ``color_by="delta"`` fills each node by whether it beat its parent;
+    ``color_by="phase"`` fills it by which stage of the search it belongs to (the
+    same colours the explorer's pipeline list uses). Node ids are the pipeline's
+    index in ``lineage.ordered()`` -- the same index the explorer payload uses --
+    so ticking a pipeline and clicking its node in the tree are the same action.
+    """
+    phase_colors = phase_colors or {}
+    order = lineage.ordered()
+    index_of = {n.name: i for i, n in enumerate(order)}
     dot = Digraph(graph_attr={"rankdir": "TB", "bgcolor": "transparent",
                               "nodesep": "0.28", "ranksep": "0.55"},
                   node_attr={"shape": "box", "style": "filled,rounded",
                              "fontname": "Helvetica", "fontsize": "11",
                              "penwidth": "1.3", "margin": "0.14,0.08"},
                   edge_attr={"color": "#94a3b8", "arrowsize": "0.8"})
-    for name, node in lineage.nodes.items():
-        delta = lineage.delta_score(name)
+    for node in order:
+        i = index_of[node.name]
+        delta = lineage.delta_score(node.name)
         score = f"{node.score:.5f}" if node.score is not None else "—"
         dstr = ""
         if delta is not None:
             dstr = f"\\n({'+' if delta >= 0 else ''}{delta:.4f})"
-        border = "#334155" if node.pipeline.ok else "#dc2626"
-        label = f"{name.replace('pipeline_', 'p')}\\n{score}{dstr}"
-        dot.node(name, label, fillcolor=_score_fill(delta), color=border,
-                 href=f"#{anchor_prefix}{name}", tooltip=(node.description or name))
-    for name, node in lineage.nodes.items():
+        if color_by == "phase":
+            hue = phase_colors.get(node.phase or "", "#64748b")
+            fill, border = _tint(hue), hue
+        else:
+            fill = _score_fill(lineage.improvement(node.name))
+            border = "#334155"
+        if not node.pipeline.ok:
+            border = "#dc2626"
+        label = f"{node.name.replace('pipeline_', 'p')}\\n{score}{dstr}"
+        dot.node(node.name, label, id=f"lin{i}", fillcolor=fill, color=border)
+    for node in order:
         if node.parent and node.parent in lineage.nodes:
-            dot.edge(node.parent, name)
-    return _svg(dot)
+            dot.edge(node.parent, node.name)
+    tips = {index_of[n.name]: (n.description or n.name) for n in order}
+    return _annotate_nodes(_svg(dot), tips)

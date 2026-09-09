@@ -45,6 +45,7 @@ class LineageNode:
 class Lineage:
     nodes: dict                        # name -> LineageNode
     roots: list                        # names with no parent
+    lower_is_better: bool = False       # metric orientation (from the trajectory)
 
     def ordered(self):
         """Report order: chronological when every node knows when it ran (a
@@ -79,6 +80,14 @@ class Lineage:
         if parent is None or parent.score is None:
             return None
         return node.score - parent.score
+
+    def improvement(self, name):
+        """``delta_score`` re-signed so positive always means *better*, whatever
+        the metric's orientation. ``None`` when there is nothing to compare."""
+        delta = self.delta_score(name)
+        if delta is None:
+            return None
+        return -delta if self.lower_is_better else delta
 
 
 def load_results(results_path: Path) -> dict:
@@ -189,4 +198,5 @@ def build_lineage_from_trajectory(pipelines: list[Pipeline], traj) -> Lineage:
     key = lambda n: (nodes[n].order or (), n)   # noqa: E731 - chronological
     for node in nodes.values():
         node.children.sort(key=key)
-    return Lineage(nodes=nodes, roots=sorted(roots, key=key))
+    return Lineage(nodes=nodes, roots=sorted(roots, key=key),
+                   lower_is_better=bool(getattr(traj, "lower_is_better", False)))

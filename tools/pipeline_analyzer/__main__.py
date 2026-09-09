@@ -116,6 +116,10 @@ def main(argv=None):
                          "folder, if present)")
     ap.add_argument("--no-runtime-stats", action="store_true",
                     help="ignore a runtime stats file even if one is found")
+    ap.add_argument("--per-pipeline-dags", action="store_true",
+                    help="also render each pipeline's own DAG as a static "
+                         "graphviz SVG (the explorer covers this interactively; "
+                         "on a 68-pipeline run these SVGs are ~90%% of the file)")
     ap.add_argument("--text", action="store_true", help="print a text summary too")
     args = ap.parse_args(argv)
 
@@ -195,7 +199,8 @@ def main(argv=None):
                             subtitle) if b]
         subtitle = " · ".join(bits)
     html = build_html(lineage, title=title, subtitle=subtitle,
-                      generated_note="generated")
+                      generated_note="generated",
+                      per_pipeline_dags=args.per_pipeline_dags)
     args.out.write_text(html, encoding="utf-8")
     print(f"Wrote {args.out.resolve()}", file=sys.stderr)
 
