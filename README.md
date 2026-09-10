@@ -17,6 +17,48 @@ iteration, and what it kept.
     skrubify*/        the skrub DataOps rewrite of each step
 ```
 
+## Corpus
+
+6 datasets, 12 agent runs, **906 pipelines** in total. One pipeline = one script
+the agent actually executed. Skrubified rewrites (`skrubify*/`) are the same
+pipeline expressed as a skrub DataOps plan, so they are not counted again.
+
+| dataset | run | agent | init | train / improve | ablation | ensemble | total |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| aptos2019-blindness-detection | mle-star-run-1 | MLE-STAR | 2 | 35 | 7 | – | **44** |
+| aptos2019-blindness-detection | mle-star-run-2 | MLE-STAR | 2 | 33 | 7 | – | **42** |
+| beaver_enroll | mle_star_flash_run_1 | MLE-STAR | 5 | 114 | 36 | 3 | **158** |
+| beaver_enroll | mle_star_flash_run_2 | MLE-STAR | 5 | 114 | 36 | 3 | **158** |
+| beaver_enroll | mle_star_flash_run_3 | MLE-STAR | 5 | 114 | 36 | 3 | **158** |
+| beaver_enroll | mle_star_flash_run_4 | MLE-STAR | 5 | 114 | 36 | 3 | **158** |
+| cover_type_multi_table | mle_star_run_1 | MLE-STAR | 2 | 9 | 2 | – | **13** |
+| cover_type_multi_table | mle_star_run_2 | MLE-STAR | 2 | 28 | 5 | 3 | **38** |
+| nyc_taxi_fare | mlevolve_run_1 | mlevolve | – | 21 | – | – | **21** |
+| playground-series-s6e7 | mlevolve_run_1 | mlevolve | – | 24 | – | – | **24** |
+| tab_playground_dec_21 | mle_star | MLE-STAR | 2 | 53 | 10 | 3 | **68** |
+| tab_playground_dec_21 | mle_claude_run_1 | Claude Code | – | 24 | – | – | **24** |
+| | | | **30** | **683** | **175** | **18** | **906** |
+
+Runs per dataset: beaver_enroll 4, aptos2019-blindness-detection 2,
+cover_type_multi_table 2, nyc_taxi_fare 1, playground-series-s6e7 1,
+tab_playground_dec_21 2 (one MLE-STAR, one Claude Code).
+
+Notes on the counts:
+
+- The ablation column is MLE-STAR's ablation scripts — runnable variants of the
+  current solution, but probes rather than candidate solutions. Drop them and
+  the corpus is 731 pipelines.
+- mlevolve keeps a script only for nodes that ran; both journals hold 31 nodes
+  against 21 (nyc_taxi_fare) and 24 (playground-series-s6e7) saved scripts.
+- `mle_claude_run_1` writes skrub DataOps plans directly, so it has no
+  `skrubify*/` folder. Its `common.py`, `features.py`, `nn.py` (shared modules)
+  and `data_exploration_*.py` are not pipelines and are excluded.
+- `tab_playground_dec_21/mle_star` is one run; `skrubify_gemini` and
+  `skrubify_openai` are two translations of it by different skrubify providers.
+- Both aptos runs ended in agent error, and the beaver_enroll runs were never
+  validated against real data (see `mle_star_flash_run_3/result.txt`) — they are
+  kept as trajectories, not as working solutions.
+
 ## Tools
 
 - [`tools/skrubify`](tools/skrubify) — convert a pandas/sklearn script into a
