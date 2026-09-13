@@ -1,0 +1,1058 @@
+import collections
+import gc
+import json
+import math
+import os
+import numpy as np
+import pandas as pd
+import pyarrow.parquet as pq
+import scipy.sparse as sp
+from sklearn.decomposition import TruncatedSVD
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.preprocessing import StandardScaler
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+# =========================================================================
+# 1. Feature Extraction Helper Functions
+# =========================================================================
+def extract_tld_and_sld(hostname):
+    """Robust extraction of top-level and second-level domain from hostname."""
+    if not isinstance(hostname, str) or not hostname:
+        return "unknown", "unknown"
+    parts = hostname.lower().strip().split(".")
+    if len(parts) == 1:
+        return parts[0], parts[0]
+    two_part = ".".join(parts[-2:])
+    common_two_part = {
+        "co.uk",
+        "gov.uk",
+        "ac.uk",
+        "org.uk",
+        "com.au",
+        "net.au",
+        "org.au",
+        "co.nz",
+        "co.jp",
+        "com.br",
+        "com.mx",
+        "com.tr",
+        "com.ru",
+    }
+    if two_part in common_two_part and len(parts) >= 3:
+        return two_part, parts[-3]
+    return parts[-1], parts[-2]
+
+
+def compute_lexical_features(hostname):
+    """Extract 9 distinct lexical & morphological features from domain hostname."""
+    if not isinstance(hostname, str) or len(hostname) == 0:
+        return [0.0] * 9
+    h = hostname.lower().strip()
+    length = len(h)
+    num_dots = h.count(".")
+    num_digits = sum(c.isdigit() for c in h)
+    num_hyphens = h.count("-")
+    num_vowels = sum(c in "aeiou" for c in h)
+    vowel_ratio = num_vowels / max(length, 1)
+    digit_ratio = num_digits / max(length, 1)
+
+    counts = collections.Counter(h)
+    entropy = -sum((cnt / length) * math.log2(cnt / length) for cnt in counts.values())
+    is_ip = 1.0 if all(p.isdigit() for p in h.split(".") if p) else 0.0
+    has_www = 1.0 if "www." in h else 0.0
+
+    return [
+        float(length),
+        float(num_dots),
+        float(num_digits),
+        float(num_hyphens),
+        float(vowel_ratio),
+        float(digit_ratio),
+        float(entropy),
+        float(is_ip),
+        float(has_www),
+    ]
+
+
+# =========================================================================
+# 2. Model Architecture & Loss Design
+# =========================================================================
+class ResidualGatedBlock(nn.Module):
+    """Residual Gated Linear Unit (SwiGLU) block for dense multi-modal feature transformation."""
+
+    def __init__(self, dim: int, hidden_dim: int, dropout: float = 0.15):
+        super().__init__()
+        self.norm = nn.LayerNorm(dim)
+        self.fc1 = nn.Linear(dim, hidden_dim * 2)
+        self.act = nn.SiLU()
+        self.fc2 = nn.Linear(hidden_dim, dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        x_norm = self.norm(x)
+        gate, val = self.fc1(x_norm).chunk(2, dim=-1)
+        hidden = self.act(gate) * val
+        out = self.dropout(self.fc2(hidden))
+        return residual + out
+
+
+class TrackerRelationalEmbedding(nn.Module):
+    """Learned tracker embeddings enriched via relational multi-head self-attention
+
+    to capture functional dependencies and co-occurrence bundles across the 355
+    trackers.
+    """
+
+    def __init__(
+        self,
+        num_trackers: int = 355,
+        embed_dim: int = 256,
+        num_heads: int = 4,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.num_trackers = num_trackers
+        self.embed_dim = embed_dim
+        self.tracker_embeddings = nn.Parameter(
+            torch.randn(num_trackers, embed_dim) * (1.0 / math.sqrt(embed_dim))
+        )
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.norm = nn.LayerNorm(embed_dim)
+
+    def forward(self) -> torch.Tensor:
+        emb = self.tracker_embeddings.unsqueeze(0)
+        attn_out, _ = self.self_attn(emb, emb, emb)
+        tracker_reps = self.norm(emb + attn_out).squeeze(0)
+        return tracker_reps
+
+
+class GBTrackerNet(nn.Module):
+    """Gated Bilinear Tracker Network (GB-TrackerNet).
+
+    Combines:
+    1. Multi-modal domain feature projection via stacked SwiGLU residual blocks.
+    2. Relational tracker embedding attention head.
+    3. Bilinear tracker-domain scoring.
+    4. Domain-adaptive gating skip connection for direct topological neighbor diffusion priors.
+    """
+
+    def __init__(
+        self,
+        in_features: int = 112,
+        num_trackers: int = 355,
+        embed_dim: int = 256,
+        hidden_dim: int = 512,
+        num_blocks: int = 3,
+        dropout: float = 0.15,
+    ):
+        super().__init__()
+        self.in_features = in_features
+        self.num_trackers = num_trackers
+        self.embed_dim = embed_dim
+
+        self.input_proj = nn.Sequential(
+            nn.Linear(in_features, embed_dim),
+            nn.LayerNorm(embed_dim),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+        )
+
+        self.blocks = nn.ModuleList(
+            [
+                ResidualGatedBlock(
+                    dim=embed_dim, hidden_dim=hidden_dim, dropout=dropout
+                )
+                for _ in range(num_blocks)
+            ]
+        )
+        self.domain_norm = nn.LayerNorm(embed_dim)
+
+        self.tracker_module = TrackerRelationalEmbedding(
+            num_trackers=num_trackers, embed_dim=embed_dim, dropout=dropout
+        )
+        self.tracker_bias = nn.Parameter(torch.zeros(num_trackers))
+
+        self.diffusion_gate = nn.Sequential(
+            nn.Linear(embed_dim, 64),
+            nn.SiLU(),
+            nn.Linear(64, num_trackers),
+        )
+        self.diffusion_scale = nn.Parameter(torch.tensor(1.0))
+
+    def forward(
+        self, x: torch.Tensor, diffusion_prior: torch.Tensor = None
+    ) -> torch.Tensor:
+        h = self.input_proj(x)
+        for block in self.blocks:
+            h = block(h)
+        h_domain = self.domain_norm(h)
+
+        tracker_reps = self.tracker_module()
+        logits = (
+            torch.matmul(h_domain, tracker_reps.t()) / math.sqrt(self.embed_dim)
+            + self.tracker_bias
+        )
+
+        if diffusion_prior is not None:
+            gate = torch.sigmoid(self.diffusion_gate(h_domain))
+            logits = logits + gate * (diffusion_prior * self.diffusion_scale)
+
+        return logits
+
+
+class AsymmetricRecallRankingLoss(nn.Module):
+    """Loss function combining Asymmetric Focal Loss (ASL) with a smooth
+
+    Listwise LogSumExp Ranking Penalty tailored directly for Recall@10 optimization.
+    """
+
+    def __init__(
+        self,
+        gamma_pos: float = 1.0,
+        gamma_neg: float = 4.0,
+        margin: float = 0.05,
+        ranking_weight: float = 0.5,
+        tau: float = 1.0,
+    ):
+        super().__init__()
+        self.gamma_pos = gamma_pos
+        self.gamma_neg = gamma_neg
+        self.margin = margin
+        self.ranking_weight = ranking_weight
+        self.tau = tau
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        probs = torch.sigmoid(logits)
+
+        # 1. Asymmetric Focal Cross-Entropy
+        pos_probs = probs.clamp(min=1e-7, max=1.0 - 1e-7)
+        pos_loss = (
+            -targets * torch.pow(1.0 - pos_probs, self.gamma_pos) * torch.log(pos_probs)
+        )
+
+        neg_probs = (probs - self.margin).clamp(min=0.0, max=1.0 - 1e-7)
+        neg_loss = (
+            -(1.0 - targets)
+            * torch.pow(neg_probs, self.gamma_neg)
+            * torch.log((1.0 - neg_probs).clamp(min=1e-7))
+        )
+        asl_loss = (pos_loss + neg_loss).sum(dim=-1).mean()
+
+        if self.ranking_weight <= 0:
+            return asl_loss
+
+        # 2. Smooth Listwise Ranking Surrogate Loss
+        pos_mask = targets >= 0.5
+        neg_mask = ~pos_mask
+
+        neg_logits = torch.where(
+            neg_mask, logits, torch.tensor(-1e4, device=logits.device)
+        )
+        lse_neg = (
+            torch.logsumexp(self.tau * neg_logits, dim=-1, keepdim=True) / self.tau
+        )
+
+        rank_diff = lse_neg - logits
+        rank_penalty = F.softplus(self.tau * rank_diff) / self.tau
+
+        num_positives = pos_mask.sum(dim=-1, keepdim=True).clamp(min=1.0)
+        sample_rank_loss = (rank_penalty * pos_mask.float()).sum(
+            dim=-1, keepdim=True
+        ) / num_positives
+
+        has_pos = (pos_mask.sum(dim=-1) > 0).float()
+        listwise_rank_loss = (sample_rank_loss.squeeze(-1) * has_pos).sum() / (
+            has_pos.sum() + 1e-7
+        )
+
+        total_loss = asl_loss + self.ranking_weight * listwise_rank_loss
+        return total_loss
+
+
+def compute_recall_at_10(logits, targets) -> float:
+    """Official competition evaluation metric: Recall@10.
+
+    For each domain, the fraction of its true trackers that appear anywhere in the top 10
+    predicted trackers, averaged across all domains.
+    """
+    if isinstance(logits, torch.Tensor):
+        logits = logits.detach().cpu().numpy()
+    if isinstance(targets, torch.Tensor):
+        targets = targets.detach().cpu().numpy()
+
+    top10_preds = np.argpartition(logits, -10, axis=-1)[:, -10:]
+
+    if sp.issparse(targets):
+        targets_csr = targets.tocsr()
+        indptr = targets_csr.indptr
+        indices = targets_csr.indices
+        recalls = []
+        for i in range(len(top10_preds)):
+            true_trackers = set(indices[indptr[i] : indptr[i + 1]])
+            if len(true_trackers) == 0:
+                continue
+            hits = len(set(top10_preds[i]).intersection(true_trackers))
+            recalls.append(hits / len(true_trackers))
+        return float(np.mean(recalls)) if recalls else 0.0
+
+    recalls = []
+    for pred_row, true_row in zip(top10_preds, targets):
+        if sp.issparse(true_row):
+            true_trackers = set(true_row.indices)
+        elif isinstance(true_row, np.ndarray):
+            true_trackers = set(np.where(true_row > 0.5)[0])
+        else:
+            true_trackers = set(true_row)
+
+        if len(true_trackers) == 0:
+            continue
+        hits = len(set(pred_row).intersection(true_trackers))
+        recalls.append(hits / len(true_trackers))
+
+    return float(np.mean(recalls)) if recalls else 0.0
+
+
+def build_optimizer_and_scheduler(
+    model: nn.Module,
+    lr: float = 1e-3,
+    weight_decay: float = 1e-4,
+    total_steps: int = 1000,
+    pct_start: float = 0.1,
+):
+    """Constructs AdamW optimizer with decoupled weight decay and OneCycleLR schedule."""
+    decay_params = []
+    no_decay_params = []
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if (
+            "bias" in name
+            or "norm" in name
+            or "tracker_bias" in name
+            or "diffusion_scale" in name
+        ):
+            no_decay_params.append(param)
+        else:
+            decay_params.append(param)
+
+    optimizer_grouped_parameters = [
+        {"params": decay_params, "weight_decay": weight_decay},
+        {"params": no_decay_params, "weight_decay": 0.0},
+    ]
+
+    optimizer = torch.optim.AdamW(
+        optimizer_grouped_parameters, lr=lr, betas=(0.9, 0.98), eps=1e-6
+    )
+
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=lr,
+        total_steps=max(1, total_steps),
+        pct_start=pct_start,
+        anneal_strategy="cos",
+        div_factor=10.0,
+        final_div_factor=1e2,
+    )
+
+    return optimizer, scheduler
+
+
+# =========================================================================
+# 3. Main End-to-End Pipeline Execution
+# =========================================================================
+def main():
+    print("Starting data processing and feature engineering...")
+    os.makedirs("./working", exist_ok=True)
+    os.makedirs("./submission", exist_ok=True)
+    np.random.seed(42)
+    torch.manual_seed(42)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    num_trackers = 355
+
+    # 1. Load Trackers metadata
+    print("Loading tracker metadata...")
+    trackers_df = pd.read_csv("./input/trackers.tsv", sep="\t")
+    tracker_to_domain_map = dict(
+        zip(trackers_df["tracker_id"], trackers_df["tracking_domain_id"])
+    )
+    trackers_df.to_parquet(
+        "./working/tracker_metadata.parquet", index=False, engine="pyarrow"
+    )
+
+    # 2. Load Target domains (Test set)
+    print("Loading test target domains...")
+    target_df = pd.read_csv("./input/target.tsv", sep="\t")
+    test_domain_ids = target_df["domain_id"].values.astype(np.int64)
+    test_domain_set = set(test_domain_ids)
+    print(f"Total test domains: {len(test_domain_ids)}")
+
+    # 3. Load tracking graph (Train set candidate pool)
+    print("Loading tracking_graph_train.parquet...")
+    train_graph_df = pd.read_parquet("./input/tracking_graph_train.parquet")
+    all_train_domains = train_graph_df["domain_id"].unique().astype(np.int64)
+
+    # Strict isolation: ensure no overlap with test set
+    candidate_train_domains = np.array(
+        [d for d in all_train_domains if d not in test_domain_set]
+    )
+    np.random.shuffle(candidate_train_domains)
+
+    # Split into train pool and validation pool
+    val_size = min(50000, int(len(candidate_train_domains) * 0.15))
+    val_domain_ids = candidate_train_domains[:val_size]
+    train_domain_ids_pool = candidate_train_domains[val_size:]
+    print(
+        f"Validation domain count: {len(val_domain_ids)}, Train pool candidate"
+        f" count: {len(train_domain_ids_pool)}"
+    )
+
+    val_domain_set = set(val_domain_ids)
+    train_domain_pool_set = set(train_domain_ids_pool)
+
+    # Build ground truth tracking dict strictly for train pool and val pool
+    train_labels_map = collections.defaultdict(list)
+    val_labels_map = collections.defaultdict(list)
+
+    for row in train_graph_df.itertuples(index=False):
+        d_id = row.domain_id
+        t_id = row.tracker_id
+        if d_id in train_domain_pool_set:
+            train_labels_map[d_id].append(t_id)
+        elif d_id in val_domain_set:
+            val_labels_map[d_id].append(t_id)
+
+    del train_graph_df
+    gc.collect()
+
+    # Subsample balanced training set of 150,000 domains
+    max_train_samples = min(150000, len(train_domain_ids_pool))
+    selected_train_domains = set()
+
+    # Tracker-stratified sampling: ensure coverage across trackers
+    domains_by_tracker = collections.defaultdict(list)
+    for d_id, t_list in train_labels_map.items():
+        for t_id in t_list:
+            domains_by_tracker[t_id].append(d_id)
+
+    for t_id in range(num_trackers):
+        cand = domains_by_tracker.get(t_id, [])
+        if cand:
+            chosen = np.random.choice(cand, size=min(len(cand), 250), replace=False)
+            selected_train_domains.update(chosen)
+
+    remaining_quota = max_train_samples - len(selected_train_domains)
+    if remaining_quota > 0:
+        remaining_pool = [
+            d for d in train_domain_ids_pool if d not in selected_train_domains
+        ]
+        chosen_rem = np.random.choice(
+            remaining_pool,
+            size=min(len(remaining_pool), remaining_quota),
+            replace=False,
+        )
+        selected_train_domains.update(chosen_rem)
+
+    train_domain_ids = np.array(list(selected_train_domains), dtype=np.int64)
+    print(f"Final sampled training domains: {len(train_domain_ids)}")
+
+    # 4. Load Domain Strings from domains.parquet
+    print("Loading domain hostnames...")
+    needed_domains = set(train_domain_ids) | set(val_domain_ids) | set(test_domain_ids)
+    domains_pq = pq.read_table(
+        "./input/domains.parquet", columns=["domain_id", "domain"]
+    )
+    domains_df = domains_pq.to_pandas()
+    del domains_pq
+    gc.collect()
+
+    domains_df = domains_df[domains_df["domain_id"].isin(needed_domains)]
+    domain_to_str = dict(zip(domains_df["domain_id"], domains_df["domain"]))
+    del domains_df
+    gc.collect()
+
+    # 5. Load Press Freedom metadata & join by TLD
+    print("Processing press freedom data...")
+    fop_map = {}
+    try:
+        fop_df = pd.read_csv("./input/freedom-of-the-press.csv", sep="\t")
+    except Exception:
+        fop_df = pd.read_csv("./input/freedom-of-the-press.csv")
+    fop_df.columns = [c.strip().lower() for c in fop_df.columns]
+    for row in fop_df.itertuples(index=False):
+        tld_val = str(getattr(row, "tld", "")).strip().lstrip(".").lower()
+        score_val = getattr(row, "freedom_of_the_press", np.nan)
+        try:
+            fop_map[tld_val] = float(score_val)
+        except (ValueError, TypeError):
+            continue
+
+    # 6. Load URL Categorization data
+    print("Processing URL category fingerprints...")
+    url_cat_df = pd.read_csv("./input/url-classification.csv")
+    extracted_domains = (
+        url_cat_df["url"]
+        .str.extract(r"https?://(?:www\.)?([^/:\?]+)", expand=False)
+        .str.lower()
+    )
+    url_cat_df["clean_domain"] = extracted_domains
+    valid_urls = url_cat_df.dropna(subset=["clean_domain", "category"])
+    cat_counts = (
+        valid_urls.groupby(["clean_domain", "category"]).size().unstack(fill_value=0)
+    )
+    url_categories = sorted(list(cat_counts.columns))
+    cat_dist = cat_counts.div(cat_counts.sum(axis=1), axis=0)
+    cat_dist_dict = cat_dist.to_dict(orient="index")
+    del url_cat_df, valid_urls, cat_counts
+    gc.collect()
+
+    # 7. Extract Lexical, TLD, Press Freedom, and URL Category Features
+    def extract_base_features(domain_id_list):
+        lexical_feats = []
+        fop_feats = []
+        cat_feats = []
+        hostnames = []
+        tlds = []
+
+        for d_id in domain_id_list:
+            hostname = domain_to_str.get(d_id, "")
+            hostnames.append(hostname)
+            lexical_feats.append(compute_lexical_features(hostname))
+
+            tld, _ = extract_tld_and_sld(hostname)
+            tlds.append(tld)
+            if tld in fop_map:
+                fop_feats.append([fop_map[tld], 1.0])
+            else:
+                fop_feats.append([np.nan, 0.0])
+
+            if hostname in cat_dist_dict:
+                cat_vec = [cat_dist_dict[hostname].get(c, 0.0) for c in url_categories]
+                cat_vec.append(1.0)
+            else:
+                cat_vec = [0.0] * len(url_categories) + [0.0]
+            cat_feats.append(cat_vec)
+
+        return (
+            np.array(lexical_feats, dtype=np.float32),
+            np.array(fop_feats, dtype=np.float32),
+            np.array(cat_feats, dtype=np.float32),
+            hostnames,
+            tlds,
+        )
+
+    print("Extracting domain base features...")
+    train_lex, train_fop, train_cat, train_hosts, train_tlds = extract_base_features(
+        train_domain_ids
+    )
+    val_lex, val_fop, val_cat, val_hosts, val_tlds = extract_base_features(
+        val_domain_ids
+    )
+    test_lex, test_fop, test_cat, test_hosts, test_tlds = extract_base_features(
+        test_domain_ids
+    )
+
+    valid_train_fop = train_fop[~np.isnan(train_fop[:, 0]), 0]
+    fop_median = float(np.median(valid_train_fop)) if len(valid_train_fop) > 0 else 50.0
+    fop_scaler = StandardScaler()
+    train_fop[np.isnan(train_fop[:, 0]), 0] = fop_median
+    val_fop[np.isnan(val_fop[:, 0]), 0] = fop_median
+    test_fop[np.isnan(test_fop[:, 0]), 0] = fop_median
+
+    train_fop[:, 0] = fop_scaler.fit_transform(train_fop[:, [0]]).flatten()
+    val_fop[:, 0] = fop_scaler.transform(val_fop[:, [0]]).flatten()
+    test_fop[:, 0] = fop_scaler.transform(test_fop[:, [0]]).flatten()
+
+    # 8. Character N-Gram TF-IDF + SVD on Hostnames
+    print("Computing subword character n-gram embeddings...")
+    tfidf = TfidfVectorizer(
+        analyzer="char_wb",
+        ngram_range=(3, 4),
+        max_features=2500,
+        min_df=5,
+        sublinear_tf=True,
+    )
+    train_tfidf = tfidf.fit_transform(train_hosts)
+    val_tfidf = tfidf.transform(val_hosts)
+    test_tfidf = tfidf.transform(test_hosts)
+
+    svd_char = TruncatedSVD(n_components=24, random_state=42)
+    train_char_svd = svd_char.fit_transform(train_tfidf).astype(np.float32)
+    val_char_svd = svd_char.transform(val_tfidf).astype(np.float32)
+    test_char_svd = svd_char.transform(test_tfidf).astype(np.float32)
+    del train_tfidf, val_tfidf, test_tfidf
+    gc.collect()
+
+    # 9. Stream link-graph.parquet to extract Degrees & Neighbor Tracker Diffusion
+    print("Streaming link-graph.parquet for graph topology & neighbor diffusion...")
+    in_degrees = collections.Counter()
+    out_degrees = collections.Counter()
+
+    train_tracker_lookup = {
+        int(d_id): train_labels_map[d_id]
+        for d_id in train_domain_ids_pool
+        if d_id in train_labels_map
+    }
+
+    domain_to_idx = {int(d): ("train", i) for i, d in enumerate(train_domain_ids)}
+    domain_to_idx.update({int(d): ("val", i) for i, d in enumerate(val_domain_ids)})
+    domain_to_idx.update({int(d): ("test", i) for i, d in enumerate(test_domain_ids)})
+
+    train_neigh_tracker = np.zeros(
+        (len(train_domain_ids), num_trackers), dtype=np.float32
+    )
+    val_neigh_tracker = np.zeros((len(val_domain_ids), num_trackers), dtype=np.float32)
+    test_neigh_tracker = np.zeros(
+        (len(test_domain_ids), num_trackers), dtype=np.float32
+    )
+
+    train_neigh_count = np.zeros(len(train_domain_ids), dtype=np.float32)
+    val_neigh_count = np.zeros(len(val_domain_ids), dtype=np.float32)
+    test_neigh_count = np.zeros(len(test_domain_ids), dtype=np.float32)
+
+    pfile = pq.ParquetFile("./input/link-graph.parquet")
+    batch_counter = 0
+
+    for batch in pfile.iter_batches(
+        batch_size=2500000, columns=["source_domain_id", "target_domain_id"]
+    ):
+        batch_counter += 1
+        src_arr = batch["source_domain_id"].to_pylist()
+        tgt_arr = batch["target_domain_id"].to_pylist()
+
+        for s, t in zip(src_arr, tgt_arr):
+            s_in_needed = s in domain_to_idx
+            t_in_needed = t in domain_to_idx
+
+            if s_in_needed:
+                out_degrees[s] += 1
+            if t_in_needed:
+                in_degrees[t] += 1
+
+            if s in train_tracker_lookup and t_in_needed:
+                split_name, idx = domain_to_idx[t]
+                if not (split_name == "train" and train_domain_ids[idx] == s):
+                    if split_name == "train":
+                        t_mat = train_neigh_tracker
+                        t_cnt = train_neigh_count
+                    elif split_name == "val":
+                        t_mat = val_neigh_tracker
+                        t_cnt = val_neigh_count
+                    else:
+                        t_mat = test_neigh_tracker
+                        t_cnt = test_neigh_count
+
+                    for trk in train_tracker_lookup[s]:
+                        t_mat[idx, trk] += 1.0
+                    t_cnt[idx] += 1.0
+
+            if t in train_tracker_lookup and s_in_needed:
+                split_name, idx = domain_to_idx[s]
+                if not (split_name == "train" and train_domain_ids[idx] == t):
+                    if split_name == "train":
+                        s_mat = train_neigh_tracker
+                        s_cnt = train_neigh_count
+                    elif split_name == "val":
+                        s_mat = val_neigh_tracker
+                        s_cnt = val_neigh_count
+                    else:
+                        s_mat = test_neigh_tracker
+                        s_cnt = test_neigh_count
+
+                    for trk in train_tracker_lookup[t]:
+                        s_mat[idx, trk] += 1.0
+                    s_cnt[idx] += 1.0
+
+    print(f"Graph streaming completed. Processed {batch_counter} link-graph batches.")
+
+    # 10. Assemble Graph Topological Features
+    def extract_graph_features(domain_id_list):
+        feats = []
+        for d_id in domain_id_list:
+            ind = in_degrees.get(int(d_id), 0)
+            outd = out_degrees.get(int(d_id), 0)
+            totd = ind + outd
+            log_ind = math.log1p(ind)
+            log_outd = math.log1p(outd)
+            log_totd = math.log1p(totd)
+            deg_ratio = log_ind / (log_outd + 1.0)
+            feats.append(
+                [
+                    float(ind),
+                    float(outd),
+                    float(totd),
+                    log_ind,
+                    log_outd,
+                    log_totd,
+                    deg_ratio,
+                ]
+            )
+        return np.array(feats, dtype=np.float32)
+
+    train_graph_feats = extract_graph_features(train_domain_ids)
+    val_graph_feats = extract_graph_features(val_domain_ids)
+    test_graph_feats = extract_graph_features(test_domain_ids)
+
+    graph_scaler = StandardScaler()
+    train_graph_feats = graph_scaler.fit_transform(train_graph_feats)
+    val_graph_feats = graph_scaler.transform(val_graph_feats)
+    test_graph_feats = graph_scaler.transform(test_graph_feats)
+
+    # 11. Normalize Neighbor Tracker Diffusion & Compute SVD
+    def process_neighbor_tracker_diffusion(
+        neigh_tracker_mat, neigh_count_vec, svd_model=None
+    ):
+        norm_mat = np.zeros_like(neigh_tracker_mat)
+        mask = neigh_count_vec > 0
+        norm_mat[mask] = neigh_tracker_mat[mask] / neigh_count_vec[mask, None]
+
+        log_cnt = np.log1p(neigh_count_vec)[:, None]
+        top1_prob = np.max(norm_mat, axis=1)[:, None]
+        sorted_probs = np.sort(norm_mat, axis=1)[:, ::-1]
+        top3_prob = np.sum(sorted_probs[:, :3], axis=1)[:, None]
+        nonzero_count = np.sum(norm_mat > 0, axis=1)[:, None]
+
+        p_safe = np.where(norm_mat > 0, norm_mat, 1.0)
+        entropy = -np.sum(norm_mat * np.log2(p_safe), axis=1)[:, None]
+
+        summary_feats = np.hstack(
+            [
+                neigh_count_vec[:, None],
+                log_cnt,
+                top1_prob,
+                top3_prob,
+                nonzero_count,
+                entropy,
+            ]
+        ).astype(np.float32)
+
+        if svd_model is None:
+            svd_model = TruncatedSVD(n_components=32, random_state=42)
+            svd_feats = svd_model.fit_transform(norm_mat).astype(np.float32)
+            return summary_feats, svd_feats, norm_mat, svd_model
+        else:
+            svd_feats = svd_model.transform(norm_mat).astype(np.float32)
+            return summary_feats, svd_feats, norm_mat, svd_model
+
+    print("Computing neighbor tracker diffusion embeddings...")
+    train_neigh_summary, train_neigh_svd, train_norm_diff, svd_diff = (
+        process_neighbor_tracker_diffusion(
+            train_neigh_tracker, train_neigh_count, svd_model=None
+        )
+    )
+    val_neigh_summary, val_neigh_svd, val_norm_diff, _ = (
+        process_neighbor_tracker_diffusion(
+            val_neigh_tracker, val_neigh_count, svd_model=svd_diff
+        )
+    )
+    test_neigh_summary, test_neigh_svd, test_norm_diff, _ = (
+        process_neighbor_tracker_diffusion(
+            test_neigh_tracker, test_neigh_count, svd_model=svd_diff
+        )
+    )
+
+    # 12. Calculate Global Tracker Priors & TLD Conditional Priors
+    print("Computing global priors & tracker co-occurrence matrix...")
+    global_tracker_counts = np.zeros(num_trackers, dtype=np.float32)
+    tracker_cooccur = np.zeros((num_trackers, num_trackers), dtype=np.float32)
+
+    for d_id in train_domain_ids:
+        t_list = train_labels_map.get(d_id, [])
+        for t in t_list:
+            global_tracker_counts[t] += 1.0
+        for t1 in t_list:
+            for t2 in t_list:
+                tracker_cooccur[t1, t2] += 1.0
+
+    global_tracker_priors = global_tracker_counts / max(1.0, len(train_domain_ids))
+
+    tld_counts = collections.Counter(train_tlds)
+    top_tlds = {t for t, c in tld_counts.most_common(50)}
+    tld_tracker_counts = collections.defaultdict(
+        lambda: np.zeros(num_trackers, dtype=np.float32)
+    )
+    tld_domain_counts = collections.Counter()
+
+    for d_id, tld in zip(train_domain_ids, train_tlds):
+        if tld in top_tlds:
+            t_list = train_labels_map.get(d_id, [])
+            for t in t_list:
+                tld_tracker_counts[tld][t] += 1.0
+            tld_domain_counts[tld] += 1.0
+
+    tld_conditional_priors = {}
+    for tld, count in tld_domain_counts.items():
+        if count > 0:
+            tld_conditional_priors[tld] = tld_tracker_counts[tld] / count
+
+    top_16_trackers = np.argsort(global_tracker_priors)[-16:]
+
+    def extract_tld_prior_features(tld_list):
+        feats = []
+        for tld in tld_list:
+            if tld in tld_conditional_priors:
+                feats.append(tld_conditional_priors[tld][top_16_trackers])
+            else:
+                feats.append(global_tracker_priors[top_16_trackers])
+        return np.array(feats, dtype=np.float32)
+
+    train_tld_prior_feats = extract_tld_prior_features(train_tlds)
+    val_tld_prior_feats = extract_tld_prior_features(val_tlds)
+    test_tld_prior_feats = extract_tld_prior_features(test_tlds)
+
+    # 13. Scale Lexical and URL Category features
+    lex_scaler = StandardScaler()
+    train_lex = lex_scaler.fit_transform(train_lex)
+    val_lex = lex_scaler.transform(val_lex)
+    test_lex = lex_scaler.transform(test_lex)
+
+    cat_scaler = StandardScaler()
+    train_cat = cat_scaler.fit_transform(train_cat)
+    val_cat = cat_scaler.transform(val_cat)
+    test_cat = cat_scaler.transform(test_cat)
+
+    # 14. Concatenate Final Dense Feature Matrices
+    print("Assembling final feature matrices...")
+    X_train = np.hstack(
+        [
+            train_lex,
+            train_fop,
+            train_cat,
+            train_char_svd,
+            train_graph_feats,
+            train_neigh_summary,
+            train_neigh_svd,
+            train_tld_prior_feats,
+        ]
+    ).astype(np.float32)
+
+    X_val = np.hstack(
+        [
+            val_lex,
+            val_fop,
+            val_cat,
+            val_char_svd,
+            val_graph_feats,
+            val_neigh_summary,
+            val_neigh_svd,
+            val_tld_prior_feats,
+        ]
+    ).astype(np.float32)
+
+    X_test = np.hstack(
+        [
+            test_lex,
+            test_fop,
+            test_cat,
+            test_char_svd,
+            test_graph_feats,
+            test_neigh_summary,
+            test_neigh_svd,
+            test_tld_prior_feats,
+        ]
+    ).astype(np.float32)
+
+    print(
+        f"X_train shape: {X_train.shape} | X_val shape: {X_val.shape} | X_test shape: {X_test.shape}"
+    )
+
+    # 15. Create Multi-hot Sparse Target Labels for Train and Validation
+    def build_sparse_targets(domain_id_list, labels_map):
+        rows, cols = [], []
+        for row_idx, d_id in enumerate(domain_id_list):
+            for t_id in labels_map.get(d_id, []):
+                rows.append(row_idx)
+                cols.append(t_id)
+        data = np.ones(len(rows), dtype=np.float32)
+        return sp.csr_matrix(
+            (data, (rows, cols)),
+            shape=(len(domain_id_list), num_trackers),
+            dtype=np.float32,
+        )
+
+    Y_train = build_sparse_targets(train_domain_ids, train_labels_map)
+    Y_val = build_sparse_targets(val_domain_ids, val_labels_map)
+
+    diff_train = sp.csr_matrix(train_norm_diff)
+    diff_val = sp.csr_matrix(val_norm_diff)
+    diff_test = sp.csr_matrix(test_norm_diff)
+
+    # Save artifacts for auditable validation
+    np.savez_compressed(
+        "./working/features_dense.npz",
+        X_train=X_train,
+        X_val=X_val,
+        X_test=X_test,
+    )
+    sp.save_npz("./working/Y_train.npz", Y_train)
+    sp.save_npz("./working/Y_val.npz", Y_val)
+    sp.save_npz("./working/neigh_diffusion_train.npz", diff_train)
+    sp.save_npz("./working/neigh_diffusion_val.npz", diff_val)
+    sp.save_npz("./working/neigh_diffusion_test.npz", diff_test)
+    np.save("./working/test_domain_ids.npy", test_domain_ids)
+
+    # 16. Instantiate Model, Loss & Optimizer
+    in_features = X_train.shape[1]
+    model = GBTrackerNet(
+        in_features=in_features,
+        num_trackers=num_trackers,
+        embed_dim=256,
+        hidden_dim=512,
+        num_blocks=3,
+        dropout=0.15,
+    ).to(device)
+
+    criterion = AsymmetricRecallRankingLoss(
+        gamma_pos=1.0,
+        gamma_neg=4.0,
+        margin=0.05,
+        ranking_weight=0.5,
+        tau=1.0,
+    ).to(device)
+
+    batch_size = 512
+    num_epochs = 12
+    eval_batch_size = 2048
+    num_train = X_train.shape[0]
+    steps_per_epoch = (num_train + batch_size - 1) // batch_size
+    total_steps = num_epochs * steps_per_epoch
+
+    optimizer, scheduler = build_optimizer_and_scheduler(
+        model=model,
+        lr=1e-3,
+        weight_decay=1e-4,
+        total_steps=total_steps,
+        pct_start=0.1,
+    )
+
+    best_val_recall = -1.0
+    best_model_path = "./working/best_gb_trackernet.pt"
+    patience = 4
+    patience_counter = 0
+
+    print("Beginning model training and validation loop...")
+    # 17. Main Training & Validation Loop
+    for epoch in range(num_epochs):
+        model.train()
+        running_loss = 0.0
+        perm = np.random.permutation(num_train)
+
+        for step in range(steps_per_epoch):
+            batch_indices = perm[step * batch_size : (step + 1) * batch_size]
+            bx = torch.from_numpy(X_train[batch_indices]).to(device)
+            bdiff = torch.from_numpy(diff_train[batch_indices].toarray()).to(device)
+            by = torch.from_numpy(Y_train[batch_indices].toarray()).to(device)
+
+            optimizer.zero_grad()
+            logits = model(bx, bdiff)
+            loss = criterion(logits, by)
+            loss.backward()
+
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            scheduler.step()
+
+            running_loss += loss.item() * len(batch_indices)
+
+        train_loss = running_loss / num_train
+
+        # Validation Evaluation Pass
+        model.eval()
+        val_logits_list = []
+        num_val = X_val.shape[0]
+        val_steps = (num_val + eval_batch_size - 1) // eval_batch_size
+
+        with torch.no_grad():
+            for v_step in range(val_steps):
+                v_start = v_step * eval_batch_size
+                v_end = min((v_step + 1) * eval_batch_size, num_val)
+                bx_val = torch.from_numpy(X_val[v_start:v_end]).to(device)
+                bdiff_val = torch.from_numpy(diff_val[v_start:v_end].toarray()).to(
+                    device
+                )
+                batch_val_logits = model(bx_val, bdiff_val)
+                val_logits_list.append(batch_val_logits.cpu().numpy())
+
+        val_logits = np.vstack(val_logits_list)
+        val_recall = compute_recall_at_10(val_logits, Y_val)
+
+        print(
+            f"Epoch {epoch + 1:02d}/{num_epochs:02d} - Loss: {train_loss:.4f} - Val"
+            f" Recall@10: {val_recall:.4f}"
+        )
+
+        if val_recall > best_val_recall:
+            best_val_recall = val_recall
+            torch.save(model.state_dict(), best_model_path)
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                break
+
+    # 18. Load Best Checkpoint & Final Validation Score
+    model.load_state_dict(torch.load(best_model_path, map_location=device))
+    model.eval()
+
+    val_logits_list = []
+    with torch.no_grad():
+        for v_step in range(val_steps):
+            v_start = v_step * eval_batch_size
+            v_end = min((v_step + 1) * eval_batch_size, num_val)
+            bx_val = torch.from_numpy(X_val[v_start:v_end]).to(device)
+            bdiff_val = torch.from_numpy(diff_val[v_start:v_end].toarray()).to(device)
+            val_logits_list.append(model(bx_val, bdiff_val).cpu().numpy())
+
+    final_val_logits = np.vstack(val_logits_list)
+    final_val_score = compute_recall_at_10(final_val_logits, Y_val)
+
+    # 19. Full Test Inference
+    test_logits_list = []
+    num_test = X_test.shape[0]
+    test_steps = (num_test + eval_batch_size - 1) // eval_batch_size
+
+    with torch.no_grad():
+        for t_step in range(test_steps):
+            t_start = t_step * eval_batch_size
+            t_end = min((t_step + 1) * eval_batch_size, num_test)
+            bx_test = torch.from_numpy(X_test[t_start:t_end]).to(device)
+            bdiff_test = torch.from_numpy(diff_test[t_start:t_end].toarray()).to(device)
+            batch_test_logits = model(bx_test, bdiff_test)
+            top10_batch = (
+                torch.topk(batch_test_logits, k=10, dim=-1).indices.cpu().numpy()
+            )
+            test_logits_list.append(top10_batch)
+
+    all_top10_test_preds = np.vstack(test_logits_list)
+
+    # 20. Format and Export Submission Files
+    sub_domains = []
+    sub_trackers = []
+
+    for d_id, preds in zip(test_domain_ids, all_top10_test_preds):
+        for trk_id in preds:
+            sub_domains.append(d_id)
+            sub_trackers.append(tracker_to_domain_map[trk_id])
+
+    sub_df = pd.DataFrame(
+        {"domain_id": sub_domains, "tracking_domain_id": sub_trackers}
+    )
+
+    sub_df.to_csv("./submission/submission.csv", sep="\t", index=False)
+    sub_df.to_csv("./submission/submission.tsv", sep="\t", index=False)
+
+    print(f"Final Validation Score: {final_val_score:.6f}")
+
+
+if __name__ == "__main__":
+    main()
