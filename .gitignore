@@ -16,3 +16,7 @@ __pycache__/
 # runtime stats collected by pipeline_analyzer.runtime: a project artifact that
 # belongs next to the report it feeds, unlike the raw data the *.json rule targets
 !**/runtime_stats_*.json
+# each run's state dump IS the trajectory - the tooling reads it, so it is tracked
+# like the pipelines beside it, not ignored as raw data
+!**/journal_slim.json
+!**/final_state.json
