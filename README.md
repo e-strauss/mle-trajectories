@@ -19,7 +19,7 @@ iteration, and what it kept.
 
 ## Corpus
 
-7 datasets, 15 agent runs, **945 pipelines** in total. One pipeline = one script
+8 datasets, 16 agent runs, **958 pipelines** in total. One pipeline = one script
 the agent actually executed. Skrubified rewrites (`skrubify*/`) are the same
 pipeline expressed as a skrub DataOps plan, so they are not counted again.
 
@@ -33,6 +33,7 @@ pipeline expressed as a skrub DataOps plan, so they are not counted again.
 | beaver_enroll | mle_star_flash_run_4 | MLE-STAR | 5 | 114 | 36 | 3 | **158** |
 | cover_type_multi_table | mle_star_run_1 | MLE-STAR | 2 | 9 | 2 | – | **13** |
 | cover_type_multi_table | mle_star_run_2 | MLE-STAR | 2 | 28 | 5 | 3 | **38** |
+| house_price | mlevolve_run_1 | mlevolve | – | 13 | – | – | **13** |
 | nyc_taxi_fare | mlevolve_run_1 | mlevolve | – | 21 | – | – | **21** |
 | playground-series-s6e7 | mlevolve_run_1 | mlevolve | – | 24 | – | – | **24** |
 | tab_playground_dec_21 | mle_star | MLE-STAR | 2 | 53 | 10 | 3 | **68** |
@@ -40,21 +41,23 @@ pipeline expressed as a skrub DataOps plan, so they are not counted again.
 | ttt-task | mlevolve_run_1 | mlevolve | – | 12 | – | – | **12** |
 | ttt-task | mlevolve_run_2 | mlevolve | – | 19 | – | – | **19** |
 | ttt-task | mlevolve_run_3 | mlevolve | – | 8 | – | – | **8** |
-| | | | **30** | **722** | **175** | **18** | **945** |
+| | | | **30** | **735** | **175** | **18** | **958** |
 
 Runs per dataset: beaver_enroll 4, aptos2019-blindness-detection 2,
-cover_type_multi_table 2, nyc_taxi_fare 1, playground-series-s6e7 1,
+cover_type_multi_table 2, house_price 1, nyc_taxi_fare 1,
+playground-series-s6e7 1,
 tab_playground_dec_21 2 (one MLE-STAR, one Claude Code), ttt-task 3.
 
 Notes on the counts:
 
 - The ablation column is MLE-STAR's ablation scripts — runnable variants of the
   current solution, but probes rather than candidate solutions. Drop them and
-  the corpus is 770 pipelines.
+  the corpus is 783 pipelines.
 - mlevolve keeps a script only for nodes that ran; its journals hold 31 nodes
   against 21 saved scripts (nyc_taxi_fare), 31 against 24
   (playground-series-s6e7), 16 against 12 (ttt-task run 1), 35 against 19
-  (ttt-task run 2) and 11 against 8 (ttt-task run 3).
+  (ttt-task run 2), 11 against 8 (ttt-task run 3) and 16 against 13
+  (house_price).
 - `mle_claude_run_1` writes skrub DataOps plans directly, so it has no
   `skrubify*/` folder. Its `common.py`, `features.py`, `nn.py` (shared modules)
   and `data_exploration_*.py` are not pipelines and are excluded.
