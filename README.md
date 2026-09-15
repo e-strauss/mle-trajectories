@@ -19,7 +19,7 @@ iteration, and what it kept.
 
 ## Corpus
 
-8 datasets, 17 agent runs, **1004 pipelines** in total. One pipeline = one script
+8 datasets, 19 agent runs, **1039 pipelines** in total. One pipeline = one script
 the agent actually executed. Skrubified rewrites (`skrubify*/`) are the same
 pipeline expressed as a skrub DataOps plan, so they are not counted again.
 
@@ -36,16 +36,18 @@ pipeline expressed as a skrub DataOps plan, so they are not counted again.
 | house_price | mlevolve_run_1 | mlevolve | – | 13 | – | – | **13** |
 | house_price | mlevolve_run_2 | mlevolve | – | 46 | – | – | **46** |
 | nyc_taxi_fare | mlevolve_run_1 | mlevolve | – | 21 | – | – | **21** |
+| nyc_taxi_fare | mlevolve_run_2 | mlevolve | – | 17 | – | – | **17** |
+| nyc_taxi_fare | mlevolve_run_3 | mlevolve | – | 18 | – | – | **18** |
 | playground-series-s6e7 | mlevolve_run_1 | mlevolve | – | 24 | – | – | **24** |
 | tab_playground_dec_21 | mle_star | MLE-STAR | 2 | 53 | 10 | 3 | **68** |
 | tab_playground_dec_21 | mle_claude_run_1 | Claude Code | – | 24 | – | – | **24** |
 | ttt-task | mlevolve_run_1 | mlevolve | – | 12 | – | – | **12** |
 | ttt-task | mlevolve_run_2 | mlevolve | – | 19 | – | – | **19** |
 | ttt-task | mlevolve_run_3 | mlevolve | – | 8 | – | – | **8** |
-| | | | **30** | **781** | **175** | **18** | **1004** |
+| | | | **30** | **816** | **175** | **18** | **1039** |
 
 Runs per dataset: beaver_enroll 4, aptos2019-blindness-detection 2,
-cover_type_multi_table 2, house_price 2, nyc_taxi_fare 1,
+cover_type_multi_table 2, house_price 2, nyc_taxi_fare 3,
 playground-series-s6e7 1,
 tab_playground_dec_21 2 (one MLE-STAR, one Claude Code), ttt-task 3.
 
@@ -53,12 +55,22 @@ Notes on the counts:
 
 - The ablation column is MLE-STAR's ablation scripts — runnable variants of the
   current solution, but probes rather than candidate solutions. Drop them and
-  the corpus is 829 pipelines.
+  the corpus is 864 pipelines.
 - mlevolve keeps a script only for nodes that ran; its journals hold 31 nodes
   against 21 saved scripts (nyc_taxi_fare), 31 against 24
   (playground-series-s6e7), 16 against 12 (ttt-task run 1), 35 against 19
   (ttt-task run 2), 11 against 8 (ttt-task run 3), 16 against 13
-  (house_price run 1) and 51 against 46 (house_price run 2).
+  (house_price run 1), 51 against 46 (house_price run 2), and 21 against 17
+  and 21 against 18 (nyc_taxi_fare runs 2 and 3).
+- `nyc_taxi_fare` run 1 saw an anonymised description of the task
+  (`od_cost_regression`, with `record_id`, `cost`, `origin_x/y`); runs 2 and 3
+  saw the un-anonymised one naming New York City taxi fares. Same data and
+  metric, so the scores compare, but in runs 2-3 the agent reconstructs domain
+  knowledge that is in no data file - the September 2012 fare hike, the JFK flat
+  rate, airport and river-crossing flags, a rotated Manhattan street grid.
+  Runs 2 and 3 differ only in how the task description frames an optional
+  library (TabFM): "optional, second-best to gradient boosting" in run 2,
+  a peer of the GBDT libraries in run 3. Neither run used it in any node.
 - `mle_claude_run_1` writes skrub DataOps plans directly, so it has no
   `skrubify*/` folder. Its `common.py`, `features.py`, `nn.py` (shared modules)
   and `data_exploration_*.py` are not pipelines and are excluded.
