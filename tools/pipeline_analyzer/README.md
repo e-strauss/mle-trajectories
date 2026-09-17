@@ -127,6 +127,27 @@ relaxation), because a graphviz layout fixed at generation time would scatter a
 three-pipeline selection across a canvas sized for all 68. It lays out 654 nodes
 (the 68-pipeline run, everything ticked) in ~100 ms.
 
+### Operator statistics
+
+Three tables, all aggregated over the run rather than per pipeline. Two are
+static — operator counts at the **logical** and at the **physical** altitude
+(total, how many pipelines contain it, and the per-pipeline distribution). The
+third, **measured time**, appears when a runtime store is loaded and is the time
+counterpart: per operator class, total time, share, calls, **per call**,
+how many pipelines it ran in, and the pipeline it was heaviest in (linked).
+
+The two rankings are nothing alike, which is the point of having both: on the
+dec21 run the most *numerous* operator is 1506 elementwise `NumericOp` maps
+worth 0.1% of the time, while `PredictorOp` — 630 calls — is 95.8%. `per call`
+is what separates an operator that is expensive from one that is merely
+frequent. A collapsed row-per-operator-*instance* breakdown sits under the
+table for the 113-row detail (which assign-map, which projection).
+
+Operator classes are matched to the physical table's spelling: stratum's
+readable label drops the `Op` suffix on a few ops (`Predictor`, `Split`,
+`Transformer`, `Choice`), restored here against the classes the physical DAGs
+actually contain.
+
 ### Per-pipeline detail
 
 Operator counts vs parent, the added/removed operations, estimator swaps and
@@ -182,6 +203,15 @@ half of them (median difference 0 MB, mean 5.8 MB), but 15 differ by more than
 fell between two 100 ms polls. So: read the curve for shape, `max_rss_mb` for
 the high-water mark, and drop `--mem-interval` if you need the curve to catch
 short spikes.
+
+**`--sample-rows` changes one operator, not just the data size.** It caps rows by
+rebinding `pd.read_csv` before the pipeline builds its plan, and the plan captures
+that wrapper (`apply_func(pd.read_csv)`). stratum's lowering recognises the real
+`pandas.read_csv` and turns it into a native `PandasReadCSV` op; it does not
+recognise the wrapper, so under sampling the read stays an opaque
+`CallOp(read_csv)` over a `ValueOp(path)`. Everything else measures the same plan
+— but the read row of a sampled store is not comparable with a full-data one, and
+the report says so where it shows.
 
 - `--mem-mode process|system|off` — `system` measures total memory in use, for a
   workload that fans out over processes; `off` skips sampling

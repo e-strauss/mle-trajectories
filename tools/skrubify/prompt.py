@@ -4,6 +4,12 @@ One prompt, one call. The knowledge comes from three places, cheapest first:
 
 1. ``SYSTEM`` -- the output contract and the rules that a converted pipeline must
    satisfy (these mirror ``checks.py``, so repair feedback is never a surprise).
+
+This file is the tool's FIRST line of defence, and it should stay that way: a
+rule that only lives in ``checks.py`` is paid for with a repair round -- a second
+full call carrying the guide and the examples again. Fix a new failure mode here
+first, then add the check as a net. See "Design principle: one shot" in the
+README.
 2. the skrub DataOps guide markdown (``tools/skrub_dataops_summary.md`` by
    default, ``--guide`` to override) -- the API reference.
 3. few-shot pairs from ``examples/`` -- a hand-written conversion of a simple
@@ -38,6 +44,12 @@ Your job is a FAITHFUL TRANSLATION, not a redesign:
   `mark_as_X(cv=...)`: a manual `KFold`/`StratifiedKFold` fold loop becomes that
   same splitter; a single `train_test_split(test_size=t)` becomes
   `ShuffleSplit(n_splits=1, test_size=t, random_state=...)`.
+  A fold loop that `break`s after the first fold scored ONE hold-out, not k:
+  wrap the original's splitter in the guide's `FirstFold` (section 3) so the
+  plan scores that fold's exact rows. Never substitute a same-sized
+  `ShuffleSplit`/`StratifiedShuffleSplit` for it -- identical size and per-class
+  counts, ~chance row overlap, a different score -- and never pass the bare
+  k-fold, which runs k folds and reports their mean.
 * Do NOT add feature engineering, tuning, `choose_from` choices, models or
   ensembling that the original does not have. Do not "improve" the pipeline.
 * **You cannot see the data, so never decide that a step is a no-op.** Logic
@@ -108,27 +120,49 @@ Your job is a FAITHFUL TRANSLATION, not a redesign:
   loop) belongs in a small `ClassifierMixin, BaseEstimator` / `RegressorMixin,
   BaseEstimator` wrapper applied with `.skb.apply(wrapper, y=y)`, so it is
   re-run per fold on that fold's training rows only. Mixins come FIRST in the
-  bases, before BaseEstimator. Early stopping survives the same way: an
-  `early_stopping_rounds` / `eval_set` on an estimator applied directly in the
-  plan has no eval set and must go, but inside such a wrapper -- fed by the
-  wrapper's own inner split -- it is correct and should be kept. Keeping early
-  stopping is REQUIRED, not one option among two: silently dropping
-  `early_stopping_rounds` trains the full `n_estimators` and shifts the score by
-  far more than any tolerance (measured: 0.03 RMSE, in the model's FAVOUR,
-  because a 50-round patience had been stopping it too early). The preferred form
-  is the `GetXY` + `fit_kwargs={"eval_set": ...}` pattern in the guide's section 7
-  -- a `how="no_wrap"` transformer that splits the fold's own training rows and
-  returns a dict, whose pieces are then passed to `fit_kwargs` as DataOps. USE
-  THAT PATTERN whenever the only reason a wrapper would exist is to hold an inner
-  split and an `eval_set`: copy it from the guide, keeping the original's patience,
-  `n_estimators` and split fraction. A wrapper estimator is correct ONLY when its
-  `fit` does something a recorded op cannot express anyway -- a torch loop, an
-  internal ensemble, per-fold class weights -- not merely to call
-  `train_test_split` before `model.fit`.
+  bases, before BaseEstimator.
+* **EARLY STOPPING NEEDS NO WRAPPER -- it has one correct form.** An
+  `early_stopping_rounds` / `eval_set` handed to an estimator applied directly
+  in the plan has no eval set and cannot stay as written, but the fix is the
+  `GetXY` + `fit_kwargs={"eval_set": ...}` pattern of the guide's section 7: a
+  `how="no_wrap"` transformer that splits the fold's OWN training rows and
+  returns a dict, whose pieces are then handed to `fit_kwargs` as DataOps. Copy
+  it from the guide, keeping the original's patience, `n_estimators` and split
+  fraction. It works for every booster, but each spells the patience its own
+  way and getting it wrong fails at SCORING time, not build time:
+  - CatBoost: `fit_kwargs={"eval_set": (X_val, y_val),
+    "early_stopping_rounds": 50}`.
+  - LightGBM: `fit_kwargs={"eval_set": [(X_val, y_val)],
+    "callbacks": [lgb.early_stopping(50, verbose=False)]}`.
+  - XGBoost >= 2.0: the patience is a CONSTRUCTOR argument
+    (`XGBRegressor(..., early_stopping_rounds=50)`) and `fit` takes only
+    `fit_kwargs={"eval_set": [(X_val, y_val)]}` -- passing
+    `early_stopping_rounds` to `fit()` was REMOVED in xgboost 2.0 and raises.
+  You have exactly three ways to handle an original that early-stops, and two
+  of them are defects:
+  - `GetXY` + `fit_kwargs` -- CORRECT, always available, always preferred.
+  - a wrapper estimator whose `fit` splits the rows and calls
+    `model.fit(..., eval_set=...)` -- a DEFECT. It buries the split in one
+    opaque node, and the plan then cannot show the very thing it exists to
+    show. A wrapper is correct ONLY when its `fit` does something no recorded
+    op can express -- a torch loop, an internal ensemble, per-fold class
+    weights -- never merely to split rows before `model.fit`. Needing to build
+    the estimator inside `fit` to dodge CatBoost's cloning bug is not a reason
+    either: subclass with `__sklearn_clone__` as the guide shows.
+  - deleting `early_stopping_rounds` / `eval_set` / the LightGBM callbacks --
+    the WORST option, and never acceptable. It trains the full `n_estimators`
+    and shifts the score by far more than any tolerance (measured: 0.03 RMSE,
+    in the model's FAVOUR, because a 50-round patience had been stopping it too
+    early). "A CV plan has no eval set" is not a justification for dropping it;
+    it is the reason to write `GetXY`.
+
   If the original early-stops on the very split it reports as validation, that
   split is leaky and its score cannot be reproduced -- keep the patience and
-  `n_estimators`, carve the eval set from training rows, and say so in a
-  comment.
+  `n_estimators`, carve the eval set out of the fold's training rows with
+  `GetXY`, and say so in a comment.
+  Never disguise a keyword argument to slip past a rule -- no `"eval" + "_set"`,
+  no `**{"early_stopping_rounds": 50}` spelling. If a kwarg feels like it needs
+  hiding, you are reaching for the wrong pattern; reach for `GetXY` instead.
 * DO drop everything that is not part of producing a cross-validated score:
   test-set prediction, submission files, intermediate parquet/csv dumps,
   progress printing per fold, directory creation, chunked reads.
@@ -188,6 +222,18 @@ Hard requirements:
    inverse is applied to the predictions gated on `skrub.eval_mode()` (in "fit"
    mode a prediction node evaluates to the fitted estimator, so ungated
    arithmetic on it raises TypeError inside the CV loop).
+   A DTYPE CAST OR NON-FINITE CLEANUP OF y COUNTS AS A TRANSFORM. The score is
+   computed against the `mark_as_y` node, so `y_model = y.astype(np.float32)`
+   (or `.replace([np.inf, -np.inf], 0).fillna(0)`, or `np.nan_to_num`) fitted
+   against a raw marked y is the same defect as `np.log1p`, and it has no
+   meaningful inverse to gate. Just DON'T: pass the marked target straight to
+   the estimator, since every booster casts internally anyway, and the original
+   converted y only to satisfy its own numpy call. Cleaning the FEATURES that
+   way is fine -- this is about y alone.
+   And never add a gated post-prediction helper that returns its input in BOTH
+   branches. If the target is genuinely untransformed, `pred` IS the prediction
+   node -- an identity function bolted on to look compliant is a wasted plan
+   node, not a fix.
 6. Write fine-grained recorded operations. No Python loop over columns (use
    `skrub.selectors` + transformer broadcasting), no in-place `df["c"] = ...`
    (use `.assign(...)`), and no multi-step `@skrub.deferred` block.
@@ -195,14 +241,35 @@ Hard requirements:
    `counts = X["c"].value_counts()`, `bad = counts[counts < k].index`,
    `data[~X["c"].isin(bad)].reset_index(drop=True)` -- never wrap that in
    `apply_func` (guide section 4).
-   EXCEPTION -- when the original builds NEW NAMED COLUMNS by looping over
-   columns it discovered from the data (`for soil in soil_cols:
-   X[f"{soil}_x_Elevation"] = ...`), put that loop inside a small
+   A UDF is ANY block of your own code the plan cannot see into, and a CUSTOM
+   CLASS is one just as much as a function. A `TransformerMixin, BaseEstimator`
+   whose `transform` body is ordinary pandas over column names spelled out in
+   the source is the same defect as `apply_func(engineer_features)` with extra
+   ceremony -- one opaque node either way. Translating the original's
+   `engineer_features(df)` means translating its BODY into `.assign(...)`
+   chains, one recorded op per derived column; it does NOT mean moving the body
+   into a `transform` method. A 60-line feature-engineering function is exactly
+   the case this rule is about, not an excuse to skip it.
+   LEARNING SOMETHING IN `fit` EXEMPTS THE COLUMNS THAT USE IT, NOT THE WHOLE
+   CLASS. When the original fits an encoder per split -- KMeans clusters, a
+   frequency map, a target encoding -- that part genuinely belongs in a
+   `TransformerMixin` whose `fit` stores `self.<attr>_`. Keep ONLY the columns
+   that read that state inside it, and write the row-wise arithmetic sitting
+   beside them (distances, bearings, roundings, calendar parts) as recorded ops.
+   A class whose `fit` learns two KMeans and whose `transform` then also builds
+   sixteen columns of plain pandas is still the UDF this rule forbids; it has
+   just acquired an alibi.
+   EXCEPTION, and the only one -- when the original builds NEW NAMED COLUMNS by
+   looping over columns it DISCOVERED FROM THE DATA (`for soil in soil_cols:
+   X[f"{soil}_x_Elevation"] = ...`, where `soil_cols` comes from
+   `df.columns`/`select_dtypes`/a prefix filter), put that loop inside a small
    `TransformerMixin, BaseEstimator` transformer's `transform` and apply it with
    `X.skb.apply(YourTransformer())`. A vectorised substitute such as
    `PolynomialFeatures` + a rename reproduces the values but neither the names
    nor the column ORDER, which changes what a randomised model actually fits
-   (guide pitfall 20).
+   (guide pitfall 20). If every column the block touches is a literal name
+   visible in the source, nothing was discovered and this exception does not
+   apply: write the recorded ops.
 7. Data-dependent constants that the original computed at runtime (e.g.
    `num_class=len(y.unique())`) must become concrete literals, since the
    estimator is constructed once while the plan is built. Infer the value from
@@ -211,7 +278,9 @@ Hard requirements:
    feed strings/categoricals to the model and the estimator cannot take them raw.
 9. Comment each numbered step, and in particular every place your translation
    is not literal (dropped submission code, a leak fixed, a constant hard-coded,
-   early stopping removed because a CV plan has no eval set).
+   an early-stopping eval set carved out of the fold's training rows because the
+   original's was the scored split). A comment explains a deviation the contract
+   allows; it does not license one it forbids.
 
 Reply with ONE ```python fenced code block containing the complete file, and
 nothing else -- no prose before or after.\

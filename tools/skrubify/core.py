@@ -117,7 +117,8 @@ def skrubify_file(source: Path, out_path: Path | None = None, *,
         if cfg.keep_attempts:
             out_path.with_suffix(f".attempt{i}.py").write_text(code)
         v = validate(out_path, python=cfg.python, strict=cfg.strict,
-                     build=cfg.validate_build, timeout=cfg.timeout)
+                     build=cfg.validate_build, timeout=cfg.timeout,
+                     original=source)
         if v.build_timed_out and v.checks.ok:
             # Out of clock, not out of correctness: give a big plan more time
             # rather than spending a repair round telling the model to fix a
@@ -125,7 +126,8 @@ def skrubify_file(source: Path, out_path: Path | None = None, *,
             _log(cfg, f"    build timed out after {cfg.timeout}s -- retrying "
                       f"with {cfg.timeout * 3}s")
             v = validate(out_path, python=cfg.python, strict=cfg.strict,
-                         build=cfg.validate_build, timeout=cfg.timeout * 3)
+                         build=cfg.validate_build, timeout=cfg.timeout * 3,
+                         original=source)
         attempt = Attempt(index=i, code=code, validation=v,
                           seconds=time.monotonic() - t0)
         result.attempts.append(attempt)

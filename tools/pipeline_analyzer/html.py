@@ -228,6 +228,22 @@ def _fmt_secs(seconds):
     return f"{seconds:.2f}s"
 
 
+def _fmt_short(seconds):
+    """Like :func:`_fmt_secs` but with sub-second resolution.
+
+    The measured-time table spans nine orders of magnitude -- a 31 s predictor
+    fit next to a 4 µs projection -- and rounding the small end to ``0.00s``
+    would empty out the per-call column, which is the whole point of it.
+    """
+    if seconds is None:
+        return "—"
+    if seconds >= 1:
+        return _fmt_secs(seconds)
+    if seconds >= 1e-3:
+        return f"{seconds * 1e3:.1f}ms"
+    return f"{seconds * 1e6:.0f}\u00b5s"
+
+
 def _memory_svg(mem: dict, width: int = 620, height: int = 96) -> str:
     """RSS over the run as an inline area chart.
 
@@ -320,8 +336,11 @@ def _runtime_block(rt: dict, top: int = 8):
              f"<th class=num>time (s)</th><th class=num>share</th></tr>{rows}</table>")
 
     note = []
-    if rt.get("sample_rows"):
-        note.append(f"measured on a {rt['sample_rows']:,}-row sample")
+    # ``sample_rows`` is None for a full-data measurement, which used to print
+    # nothing at all -- leaving the reader unable to tell which of the two the
+    # numbers came from, the one thing they most need to know.
+    note.append(f"measured on a {rt['sample_rows']:,}-row sample"
+                if rt.get("sample_rows") else "measured on the full data")
     if rt.get("cv"):
         note.append(f"cv: {rt['cv']}")
     sub = (f'<p class="muted" style="margin:6px 0 0">{esc(" · ".join(note))}</p>'
@@ -358,7 +377,7 @@ def _runtime_section(lineage: Lineage):
         for n in measured)
     samples = {n.runtime.get("sample_rows") for n in measured}
     note = ""
-    if samples - {None}:
+    if samples:
         shown = ", ".join(f"{s:,}" if s else "full data" for s in sorted(
             samples, key=lambda s: (s is None, s)))
         note = (f'<p class="muted">Rows read per pipeline: {shown}. '
@@ -431,6 +450,118 @@ def _stats_block(heading, anchor, per_pipe, *, note=""):
     return f'<h2 id="{anchor}" style="border:0">{esc(heading)}</h2>{summary}<div class="card">{table}</div>'
 
 
+def _op_class(label: str, known: set) -> str:
+    """Operator class behind a measured op label, spelled as the physical DAG
+    spells it.
+
+    The runtime store keys operators by stratum's *readable* label
+    (``Predictor [df]``, ``PandasAssignMapOp(assign: Aspect_cos) [df]``), while
+    the physical statistics above are keyed by op class. The two agree except
+    that the readable label drops the ``Op`` suffix on a handful of ops --
+    ``Predictor``/``PredictorOp``, ``Split``, ``Transformer``, ``Choice`` -- which
+    between them carry almost all of the time, so the suffix is restored against
+    the classes the physical DAGs actually contain rather than guessed.
+    """
+    cls = label.split("(")[0].split(" [")[0].strip()
+    if cls in known or not known:
+        return cls
+    return f"{cls}Op" if f"{cls}Op" in known else cls
+
+
+def _heavy_hitters_section(lineage: Lineage):
+    """Where the run actually spent its time, aggregated over every measured
+    pipeline -- the time counterpart of the physical statistics above.
+
+    The static tables say how often an operator *appears*; this one says what it
+    *cost*. Both are needed because the two rankings are nothing alike: the most
+    numerous operator here is 1500 elementwise maps worth 0.1% of the time, and
+    the operator that matters is a single predictor per pipeline.
+    """
+    measured = [n for n in lineage.ordered() if n.runtime]
+    if not measured:
+        return ""
+    known = set()
+    for n in lineage.ordered():
+        if n.pipeline.ok and n.pipeline.phys_dag is not None:
+            known |= {node.op_type for node in n.pipeline.phys_dag.nodes.values()}
+
+    agg, fine = {}, {}
+    for n in measured:
+        for row in n.runtime.get("ops") or ():
+            for key, store in ((_op_class(row["op"], known), agg), (row["op"], fine)):
+                e = store.setdefault(key, {"time": 0.0, "calls": 0, "pipes": {},
+                                           "n": 0})
+                e["time"] += row["time_s"]
+                e["calls"] += row["count"]
+                e["pipes"][n.name] = e["pipes"].get(n.name, 0.0) + row["time_s"]
+    if not agg:
+        return ""
+
+    total = sum(e["time"] for e in agg.values()) or 1.0
+    wall = sum(n.runtime.get("wall_s") or 0 for n in measured)
+    rows = []
+    for op, e in sorted(agg.items(), key=lambda kv: -kv[1]["time"]):
+        worst, worst_t = max(e["pipes"].items(), key=lambda kv: kv[1])
+        rows.append(
+            f"<tr><td class=mono>{esc(op)}</td>"
+            f"<td class=num>{_fmt_short(e['time'])}</td>"
+            f"<td class=num>{100 * e['time'] / total:.1f}%</td>"
+            f"<td class=num>{e['calls']}</td>"
+            f"<td class=num>{_fmt_short(e['time'] / e['calls']) if e['calls'] else '—'}</td>"
+            f"<td class=num>{len(e['pipes'])}/{len(measured)}</td>"
+            f'<td><a href="#pipe-{esc(worst)}">{esc(worst)}</a> '
+            f'<span class="muted">{_fmt_short(worst_t)}</span></td></tr>')
+
+    frows = "".join(
+        f"<tr><td class=mono>{esc(op)}</td>"
+        f"<td class=num>{_fmt_short(e['time'])}</td>"
+        f"<td class=num>{100 * e['time'] / total:.2f}%</td>"
+        f"<td class=num>{e['calls']}</td>"
+        f"<td class=num>{_fmt_short(e['time'] / e['calls']) if e['calls'] else '—'}</td>"
+        f"<td class=num>{len(e['pipes'])}/{len(measured)}</td></tr>"
+        for op, e in sorted(fine.items(), key=lambda kv: -kv[1]["time"]))
+
+    samples = {n.runtime.get("sample_rows") for n in measured}
+    where = ", ".join(f"{s:,} rows" if s else "the full data" for s in sorted(
+        samples, key=lambda s: (s is None, s)))
+    # A sampled sweep caps rows by rebinding ``pd.read_csv`` before the plan is
+    # built, and the plan captures that wrapper -- which stratum's lowering no
+    # longer recognises as the pandas function, so the read stays an opaque
+    # CallOp instead of becoming a native read op. It is the one row here that a
+    # sampled and a full-data store do not measure the same way.
+    caveat = ("" if samples == {None} else
+              '<p class="muted">Sampled runs cap rows by wrapping '
+              "<code>pandas.read_csv</code> before the plan is built, so the read "
+              "is not lowered to <code>PandasReadCSV</code> and shows up as "
+              "<code>CallOp</code> instead — the read row is the one that is not "
+              "comparable with a full-data store.</p>")
+    return f"""
+<h2 id="agg-measured" style="border:0">Operator statistics — measured time</h2>
+<p class="muted">{len(agg)} operator class(es) over the {len(measured)} measured
+pipeline(s), {_fmt_secs(total)} inside operator bodies out of {_fmt_secs(wall)}
+of scored grid search (the rest is scheduling, splitting and scoring). Measured on
+{esc(where)}; <b>per call</b> is what one invocation costs, which is the column
+that separates an operator that is expensive from one that is merely frequent.</p>
+{caveat}
+<div class="card">
+<table>
+<tr><th>operator</th><th class=num>total</th><th class=num>share</th>
+<th class=num>calls</th><th class=num>per call</th><th class=num>pipelines</th>
+<th>heaviest in</th></tr>
+{''.join(rows)}
+</table>
+<details class="dagbox" style="margin-top:10px">
+<summary>Full breakdown by operator instance ({len(fine)} rows)</summary>
+<table>
+<tr><th>operator</th><th class=num>total</th><th class=num>share</th>
+<th class=num>calls</th><th class=num>per call</th><th class=num>pipelines</th></tr>
+{frows}
+</table>
+</details>
+</div>
+"""
+
+
 def _aggregate_section(lineage: Lineage):
     """High-level operator statistics: one table at the logical-IR altitude, and
     one at the physical altitude (default lowering + implementation selection)."""
@@ -454,7 +585,7 @@ def _aggregate_section(lineage: Lineage):
                             "agg-physical",
                             [n.pipeline.phys_dag.histogram(specific=True) for n in phys_ok],
                             note=note)
-    return out
+    return out + _heavy_hitters_section(lineage)
 
 
 def _tree_section(lineage: Lineage, merged):
@@ -572,6 +703,8 @@ def build_html(lineage: Lineage, *, title="Pipeline evolution", subtitle="",
         '<a href="#tree">search tree</a>',
         '<a href="#explorer">operator explorer</a>',
         '<a href="#agg-logical">operator statistics</a>',
+        *(['<a href="#agg-measured">measured operator time</a>']
+          if any(n.runtime for n in ordered) else []),
         *(['<a href="#agg-runtime">measured runtime</a>']
           if any(n.runtime for n in ordered) else []),
         f'<a href="#{esc(ordered[0].name) if ordered else ""}">per-pipeline detail</a>',

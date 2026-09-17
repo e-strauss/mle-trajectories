@@ -229,6 +229,43 @@ def mask_method_kwargs(source: str) -> str:
     return "".join(out)
 
 
+def mask_sanctioned_split(source: str) -> str:
+    """Blank the body of a ``GetXY``-shaped transformer, preserving line numbers.
+
+    Sibling of :func:`mask_method_kwargs`, for the other half of the section 7
+    pattern. The transformer that carves the early-stopping eval set out of the
+    fold's own training rows necessarily calls ``train_test_split`` (or
+    permutes and slices) inside ``fit_transform`` -- so the advisory pass would
+    warn "the manual train/validation split is replaced by the CV splitter",
+    which is precisely the WRONG advice here: acting on it deletes the eval set
+    and with it the early stopping. A class is GetXY-shaped when it defines both
+    ``fit_transform`` and ``transform`` and one of them returns a dict.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return source
+    lines = source.splitlines(keepends=True)
+    keep = [True] * (len(lines) + 1)
+    for cls in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
+        methods = {m.name: m for m in cls.body if isinstance(m, ast.FunctionDef)}
+        if not {"fit_transform", "transform"} <= set(methods):
+            continue
+        returns_dict = any(
+            isinstance(r.value, ast.Dict)
+            or (isinstance(r.value, ast.Call) and isinstance(r.value.func, ast.Name)
+                and r.value.func.id == "dict")
+            for name in ("fit_transform", "transform")
+            for r in ast.walk(methods[name]) if isinstance(r, ast.Return) and r.value)
+        if not returns_dict:
+            continue
+        for row in range(cls.lineno, (cls.end_lineno or cls.lineno) + 1):
+            if row <= len(lines):
+                keep[row] = False
+    return "".join(l if keep[i + 1] else "\n" * l.count("\n")
+                   for i, l in enumerate(lines))
+
+
 def _complement(source: str, masked: str) -> str:
     """The lines `masked` blanked out -- where a scoped rule is only advisory."""
     src_lines = source.splitlines(keepends=True)
@@ -275,13 +312,41 @@ def _target_transform_check(source: str) -> list[tuple[str, str]]:
         return any(isinstance(n, ast.Attribute) and n.attr == "mark_as_y"
                    for n in ast.walk(node))
 
+    def is_apply(node) -> bool:
+        return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "apply")
+
+    def is_lookup(node, over: set[str]) -> bool:
+        """``X_y["y"]`` or ``X_y.get("y", y)`` -- pulling a piece back out."""
+        if isinstance(node, ast.Subscript):
+            return bool(names_in(node.value) & over)
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get"):
+            return bool(names_in(node.func.value) & over)
+        return False
+
     marked: set[str] = set()       # names holding the marked (raw) target
     derived: set[str] = set()      # names holding a TRANSFORM of the marked target
+    # Names holding a section 7 GetXY node: a dict of train/eval PIECES of X and
+    # y. Everything pulled out of it is a SUBSET of the raw target, never a
+    # transform of it -- `y_fit = X_y.get("y", y)` scores in exactly the domain
+    # `mark_as_y` marked. Without this the check fires on every correct early-
+    # stopping conversion and the repair round "fixes" it by bolting an
+    # identity function onto the predictions (observed).
+    splits: set[str] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign) or node.value is None:
             continue
         targets = {t.id for t in node.targets if isinstance(t, ast.Name)}
         if marks_y(node.value):
+            marked |= targets
+        elif is_apply(node.value):
+            # A plan node, not target arithmetic. `how="no_wrap"` marks the
+            # dict-returning splitter whose pieces stay in the raw domain.
+            if any(kw.arg == "how" and getattr(kw.value, "value", None) == "no_wrap"
+                   for kw in node.value.keywords):
+                splits |= targets
+        elif is_lookup(node.value, splits):
             marked |= targets
         elif names_in(node.value) & (marked | derived) and not isinstance(
                 node.value, (ast.Name, ast.Attribute)):
@@ -357,15 +422,31 @@ def _early_stopping_check(source: str) -> list[tuple[str, str]]:
 
     * ``fit_kwargs={"eval_set": [(X_val, y_val)]}`` -- the sanctioned form
       (guide section 7); inside a dict the token is followed by ``:``, not ``=``.
+    * ``XGBRegressor(early_stopping_rounds=50)`` in a file that DOES feed an
+      ``eval_set`` through ``fit_kwargs``. Since xgboost 2.0 the patience is a
+      CONSTRUCTOR parameter and ``fit()`` only takes ``eval_set``, so the
+      section 7 pattern necessarily spells it this way -- flagging it sent the
+      model into repair rounds against a correct file (observed on nyc_taxi
+      0001, xgboost 3.3.0). The defect is early stopping with no eval set
+      ANYWHERE, so the whole rule stands down once one is supplied.
     * ``MyWrapper(early_stopping_rounds=50, validation_size=0.2)`` where
       ``MyWrapper`` is a class defined in this same file -- passing the patience
-      into a wrapper that early-stops on its own inner split is exactly what the
-      contract asks for.
+      into a wrapper that early-stops on its own inner split is legitimate HERE.
+      Whether that wrapper should exist at all is a separate question, answered
+      by :func:`_gratuitous_wrapper_check`: if its ``fit`` only splits and fits,
+      the whole class is the defect and ``GetXY`` replaces it.
     * anything inside a ``def``/``class`` body -- ordinary per-fit Python.
     """
     try:
         tree = ast.parse(source)
     except SyntaxError:
+        return []
+
+    # An eval set fed through `fit_kwargs` (or a sibling) anywhere in the file
+    # means the plan HAS one, so a constructor-level patience is the xgboost>=2.0
+    # spelling of the sanctioned pattern rather than a dangling kwarg.
+    if re.search(r"\b\w*_kwargs\s*=\s*\{[^}]*[\"']eval_(?:set|X)[\"']", source,
+                 re.DOTALL):
         return []
 
     local_classes = {n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
@@ -393,6 +474,279 @@ def _early_stopping_check(source: str) -> list[tuple[str, str]]:
                             "move the model into a wrapper estimator that makes its "
                             "own inner split in fit(). Do NOT delete early stopping."))
     return out
+
+
+# Spellings that mean "this script early-stops". Kept as fragments rather than
+# whole tokens so a disguised kwarg (`"early_" + "stopping_rounds"`) still counts
+# as PRESENT -- the obfuscation is reported by _kwarg_obfuscation_check, but it
+# must never make _dropped_early_stopping_check believe the feature was deleted.
+_ES_TOKENS = ("early_stopping", "stopping_rounds", "eval_set", "eval_X",
+              "EarlyStopping", "early_")
+_ES_KWARGS = ("eval_set", "early_stopping_rounds")
+
+
+def _mentions_early_stopping(source: str) -> bool:
+    return any(tok in source for tok in _ES_TOKENS)
+
+
+def _segment(source: str, node: ast.AST) -> str:
+    lines = source.splitlines()
+    return "\n".join(lines[node.lineno - 1:(node.end_lineno or node.lineno)])
+
+
+def _method(cls: ast.ClassDef, name: str) -> ast.FunctionDef | None:
+    for item in cls.body:
+        if isinstance(item, ast.FunctionDef) and item.name == name:
+            return item
+    return None
+
+
+def _has_loop(node: ast.AST) -> bool:
+    """A `for`, or a comprehension -- i.e. the block iterates over something."""
+    return any(isinstance(n, (ast.For, ast.AsyncFor, ast.ListComp, ast.SetComp,
+                              ast.DictComp, ast.GeneratorExp))
+               for n in ast.walk(node))
+
+
+def _learns_state(fn: ast.FunctionDef | None) -> bool:
+    """`self.something_ = ...` -- a transformer that genuinely fits per fold."""
+    if fn is None:
+        return False
+    for n in ast.walk(fn):
+        if (isinstance(n, ast.Attribute) and isinstance(n.ctx, ast.Store)
+                and isinstance(n.value, ast.Name) and n.value.id == "self"
+                and n.attr.endswith("_")):
+            return True
+    return False
+
+
+def _bases(cls: ast.ClassDef) -> set[str]:
+    return {b.id for b in cls.bases if isinstance(b, ast.Name)} | {
+        b.attr for b in cls.bases if isinstance(b, ast.Attribute)}
+
+
+def _pandas_transformer_check(source: str) -> list[tuple[str, str]]:
+    """A custom transformer whose `transform` is plain pandas on literal names.
+
+    A UDF does not stop being a UDF by acquiring a `TransformerMixin` base: the
+    plan sees ONE opaque node either way, which is exactly what contract rule 6
+    forbids (guide pitfall 13). Translating `engineer_features(df)` means
+    translating its BODY into `.assign(...)` chains.
+
+    The one sanctioned custom transformer is the loop over columns DISCOVERED
+    from the data (`for soil in soil_cols: ...`), which no recorded op
+    reproduces name-for-name and order-for-order (pitfall 20) -- so any `for` /
+    comprehension in `transform` exempts the class. Also exempt: a transformer
+    that learns state in `fit` (`self.medians_ = ...`), which is a real per-fold
+    fit, and the section 7 `GetXY` splitter, which is defined by its
+    `fit_transform` and its dict return.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    out: list[tuple[str, str]] = []
+    for cls in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
+        if "TransformerMixin" not in _bases(cls):
+            continue
+        transform = _method(cls, "transform")
+        if transform is None or _has_loop(transform):
+            continue
+        if _method(cls, "fit_transform") is not None:      # GetXY-shaped
+            continue
+        stateful = _learns_state(_method(cls, "fit"))
+        # `df["new_col"] = ...`: the derived columns this block builds, split by
+        # whether they actually NEED the fitted state. A column is state-bound if
+        # its right-hand side touches `self`, or touches a column that was itself
+        # state-bound -- so a chain off a fitted encoder stays exempt while the
+        # row-wise arithmetic sitting beside it does not.
+        tainted: set[str] = set()
+        plain: list[str] = []
+        for node in ast.walk(transform):
+            if not isinstance(node, ast.Assign):
+                continue
+            for t in node.targets:
+                if not (isinstance(t, ast.Subscript)
+                        and isinstance(getattr(t.slice, "value", None), str)):
+                    continue
+                col = t.slice.value
+                rhs = ast.dump(node.value)
+                uses_state = "attr='self'" in rhs or "id='self'" in rhs
+                uses_tainted = any(f"value='{c}'" in rhs for c in tainted)
+                (tainted.add(col) if uses_state or uses_tainted
+                 else plain.append(col))
+        if len(plain) < 3:
+            continue
+        if stateful:
+            out.append((ERROR, f"line {cls.lineno}: {cls.name} mixes a real "
+                        f"per-fold fit with {len(plain)} columns of plain "
+                        "row-wise pandas that need no fitted state "
+                        f"({', '.join(plain[:4])}...). SPLIT IT: keep only the "
+                        f"{len(tainted)} column(s) that use `self.<attr>_` in the "
+                        "transformer, and write the rest as recorded ops. As "
+                        "written, one opaque node hides the entire feature "
+                        "engineering, which is what contract rule 6 forbids -- "
+                        "learning something in `fit` exempts the columns that "
+                        "USE it, not everything that shares the class."))
+        else:
+            out.append((ERROR, f"line {cls.lineno}: {cls.name}.transform builds "
+                        f"{len(plain)} named columns with plain pandas and no loop "
+                        "over discovered columns -- that is a UDF with a "
+                        "TransformerMixin base, and it collapses the whole feature "
+                        "engineering into ONE plan node. Write the body as recorded "
+                        "ops instead: one `.assign(...)` per derived column, "
+                        "`.skb.apply_func(np.sqrt)` for the numpy calls (contract "
+                        "rule 6, guide section 4). The custom-transformer exception "
+                        "is only for a loop over columns discovered from the data."))
+    return out
+
+
+def _dead_identity_check(source: str) -> list[tuple[str, str]]:
+    """An `eval_mode()`-gated post-prediction helper that changes nothing.
+
+    ``def f(values, mode): return values`` in both branches is a node that
+    exists only to answer a validator. It was produced verbatim when
+    :func:`_target_transform_check` misfired on a GetXY plan (nyc_taxi 0005
+    attempt 1, 0013), and it costs a plan node plus a reader's time. If the
+    target really is untransformed, drop the helper and let ``pred`` be the
+    prediction node.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    gated = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "apply_func" and "eval_mode" in ast.dump(node)
+                and node.args and isinstance(node.args[0], ast.Name)):
+            gated.add(node.args[0].id)
+    out: list[tuple[str, str]] = []
+    for fn in (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)):
+        if fn.name not in gated or not fn.args.args:
+            continue
+        first = fn.args.args[0].arg
+        returns = [r.value for r in ast.walk(fn) if isinstance(r, ast.Return)]
+        if not returns or any(r is None for r in returns):
+            continue
+        if all(isinstance(r, ast.Name) and r.id == first for r in returns):
+            out.append((ERROR, f"line {fn.lineno}: {fn.name} returns its input "
+                        "unchanged in every branch, so the gated node does "
+                        "nothing but occupy the plan. Either the target really "
+                        "is transformed -- then invert it here -- or it is not, "
+                        "and `pred` should be the prediction node directly. A "
+                        "no-op node added to satisfy a check is not a fix."))
+    return out
+
+
+def _gratuitous_wrapper_check(source: str) -> list[tuple[str, str]]:
+    """A wrapper estimator whose `fit` only splits the rows and fits one model.
+
+    That is the `GetXY` + `fit_kwargs={"eval_set": ...}` pattern of guide
+    section 7 written as an opaque node: the inner split disappears from the
+    plan, and with it the thing the conversion exists to show. A wrapper earns
+    its place only when `fit` does something no recorded op can express -- a
+    torch loop, an internal ensemble, per-fold class weights -- so a `for` loop
+    or a second fitted estimator in `fit` exempts the class.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    splitters = ("train_test_split", "permutation", "shuffle", "ShuffleSplit",
+                 "KFold", "StratifiedKFold", "choice", "randint")
+    out: list[tuple[str, str]] = []
+    for cls in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
+        fit = _method(cls, "fit")
+        if fit is None or _method(cls, "predict") is None or _has_loop(fit):
+            continue
+        calls = [n for n in ast.walk(fit) if isinstance(n, ast.Call)]
+        names = {n.func.id if isinstance(n.func, ast.Name) else
+                 n.func.attr if isinstance(n.func, ast.Attribute) else ""
+                 for n in calls}
+        if not (names & set(splitters)):
+            continue
+        inner_fits = [n for n in calls if isinstance(n.func, ast.Attribute)
+                      and n.func.attr in ("fit", "fit_transform")]
+        if len(inner_fits) != 1:          # an ensemble, or nothing fitted here
+            continue
+        why = (" It early-stops on that split, which is precisely what "
+               "`fit_kwargs` is for." if _mentions_early_stopping(_segment(source, cls))
+               else "")
+        out.append((ERROR, f"line {cls.lineno}: {cls.name}.fit only splits the "
+                    "fold's rows and fits one estimator, so the wrapper exists "
+                    "purely to hold an inner split -- which contract rule and "
+                    f"guide section 7 assign to `GetXY`.{why} Replace the class "
+                    'with the `how="no_wrap"` GetXY transformer + '
+                    '`fit_kwargs={"eval_set": (X_val, y_val), ...}`, keeping the '
+                    "original's patience and split fraction. A wrapper is "
+                    "correct only when `fit` does something no recorded op can "
+                    "express (a torch loop, an internal ensemble)."))
+    return out
+
+
+def _kwarg_obfuscation_check(source: str) -> list[tuple[str, str]]:
+    """`"eval" + "_set"` -- a kwarg name assembled to slip past a rule.
+
+    Seen in the wild (nyc_taxi 0005). It defeats nothing (the early-stopping
+    check is an AST pass that exempts class bodies anyway) but it is a reliable
+    tell that the model knew it was breaking a rule and routed around it instead
+    of using the sanctioned pattern.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+
+    def joined(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left, right = joined(node.left), joined(node.right)
+            return None if left is None or right is None else left + right
+        return None
+
+    out: list[tuple[str, str]] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add)):
+            continue
+        text = joined(node)
+        if text in _ES_KWARGS:
+            out.append((ERROR, f"line {node.lineno}: the argument name "
+                        f"{text!r} is assembled by string concatenation. Spell "
+                        "keyword arguments out. If a kwarg feels like it needs "
+                        "hiding from the validator, the pattern is wrong, not "
+                        "the validator: early stopping belongs in "
+                        '`fit_kwargs={"eval_set": ...}` fed by a GetXY '
+                        "transformer (guide section 7)."))
+    return out
+
+
+def _dropped_early_stopping_check(source: str, original: str | None
+                                  ) -> list[tuple[str, str]]:
+    """The original early-stops and the conversion does not, in any spelling.
+
+    Deleting `early_stopping_rounds` trains the full `n_estimators` and moves
+    the score by far more than any tolerance (measured: 0.03 RMSE, in the
+    model's favour). It is the one early-stopping outcome that cannot be
+    defended, and it is invisible to every check that only reads the candidate
+    -- hence the original is passed in.
+    """
+    if not original or not _mentions_early_stopping(strip_noncode(original)):
+        return []
+    if _mentions_early_stopping(source):
+        return []
+    return [(ERROR, "the original early-stops (`early_stopping_rounds` / "
+             "`eval_set` / an early-stopping callback) and this conversion has "
+             "no early stopping at all. Deleting it is not an option: it trains "
+             "the full `n_estimators` and shifts the score far beyond any "
+             "tolerance. Carve the eval set out of the fold's OWN training rows "
+             'with the `how="no_wrap"` GetXY transformer and pass it as '
+             '`fit_kwargs={"eval_set": [(X_val, y_val)], ...}` (guide section '
+             "7), keeping the original's patience. If the original early-stopped "
+             "on the very rows it reports as its score, that number is "
+             "unreproducible -- keep the patience anyway and say so in a "
+             "comment.")]
 
 
 def _transformer_output_check(source: str) -> list[tuple[str, str]]:
@@ -532,6 +886,10 @@ def _arg_checks(source: str) -> list[tuple[str, str]]:
     out += _udf_check(source)
     out += _transformer_output_check(source)
     out += _early_stopping_check(source)
+    out += _pandas_transformer_check(source)
+    out += _gratuitous_wrapper_check(source)
+    out += _kwarg_obfuscation_check(source)
+    out += _dead_identity_check(source)
 
     for lineno, args in _calls(source, ".skb.concat"):
         if args.strip() and not args.lstrip().startswith("["):
@@ -567,7 +925,8 @@ def strip_noncode(source: str) -> str:
     return "".join(lines)
 
 
-def run_checks(source: str, *, strict: bool = False) -> CheckReport:
+def run_checks(source: str, *, strict: bool = False,
+               original: str | None = None) -> CheckReport:
     source = strip_noncode(source)
     toplevel = mask_functions(source)
     regions = {"all": source, "plan": plan_block(source),
@@ -590,8 +949,13 @@ def run_checks(source: str, *, strict: bool = False) -> CheckReport:
             # patterns the contract ASKS for, so warning about them is pure noise.
             outside = (_complement(regions["toplevel"], region) if rule.scope == "plan"
                        else _complement(source, region))
+            # ...minus the section 7 splitter, where the "manual split" advisory
+            # would argue for deleting the early-stopping eval set.
+            outside = mask_sanctioned_split(outside)
             for msg in rule.check(outside):
                 warnings.append(msg)
     for level, msg in _arg_checks(source):
+        (errors if level == ERROR or strict else warnings).append(msg)
+    for level, msg in _dropped_early_stopping_check(source, original):
         (errors if level == ERROR or strict else warnings).append(msg)
     return CheckReport(errors, warnings)

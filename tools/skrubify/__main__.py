@@ -181,7 +181,8 @@ def _check(paths: list[Path], args) -> int:
     rc = 0
     for path in paths:
         v = validate(path, python=args.python, strict=args.strict,
-                     build=not args.no_validate, timeout=args.build_timeout)
+                     build=not args.no_validate, timeout=args.build_timeout,
+                     original=_find_source(path))
         flag = "OK  " if v.ok else "FAIL"
         print(f"{flag} {path}: {v.summary()}")
         text = v.feedback()

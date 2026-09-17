@@ -60,6 +60,16 @@ their default).
 
 ## How it works
 
+**Design principle: one shot.** Every check error costs a repair round, and a
+repair round is another full LLM call with the guide and the examples in it —
+the single biggest term in this tool's latency and token bill. So a defect is
+fixed in the PROMPT first and in `checks.py` second: the prompt is the mechanism
+that prevents it, the check is the net that catches the residue. Adding a rule
+to `checks.py` without the matching prompt change is a regression in wall-clock
+even when it makes the output correct, because it converts a would-be one-call
+conversion into two. When a run surfaces a new failure mode, ask "what sentence
+would have stopped this before it was written?" before reaching for a rule.
+
 1. **Prompt** (`prompt.py`) — one call, three knowledge sources: a system message
    holding the output contract and translation rules; the full skrub DataOps
    guide (`tools/skrub_dataops_summary.md`, override with `--guide`); and
@@ -96,17 +106,51 @@ their default).
        a fold loop, `train_test_split`, `.iloc[train_idx]`, a hand-computed
        metric, `eval_set=`/`early_stopping_rounds=`. Inside a wrapper estimator
        all of these are legitimate (an inner validation split for early stopping
-       is per-fit, not the outer CV), so there they only warn.
+       is per-fit, not the outer CV), so there they only warn — whether the
+       wrapper deserves to exist is judged separately, see the AST passes below.
      - `all` — everywhere: the contract rules, including "no argparse".
 
      Outside its scope a forbid rule still reports, as a *warning* that never
-     forces a repair round.
+     forces a repair round — except inside a `GetXY`-shaped splitter, which is
+     masked entirely (`mask_sanctioned_split`, sibling of `mask_method_kwargs`).
+     Its `train_test_split` / `.iloc[train_idx]` would otherwise draw "the manual
+     split is replaced by the CV splitter", advice that deletes the eval set and
+     the early stopping with it. That noise was firing on all six conversions
+     that got the pattern right.
 
-     One check is an AST pass rather than a pattern: fitting on a target derived
-     from the `mark_as_y` node (`y - 1`, `np.log1p`, `astype`, …) without an
-     `eval_mode()`-gated inverse on the predictions. That scores predictions in
-     the wrong domain — a plan that builds perfectly and returns a plausible
-     number (accuracy 0.0 for a label shift). Nothing else catches it.
+     Some checks are AST passes rather than patterns, because the defect has no
+     reliable spelling:
+     - fitting on a target derived from the `mark_as_y` node (`y - 1`,
+       `np.log1p`, `astype`, …) without an `eval_mode()`-gated inverse on the
+       predictions. That scores predictions in the wrong domain — a plan that
+       builds perfectly and returns a plausible number (accuracy 0.0 for a label
+       shift). Nothing else catches it. Pieces pulled back out of a `GetXY` node
+       (`y_fit = X_y.get("y", y)`) are a *subset* of the raw target, not a
+       transform of it, and are exempt — without that exemption the rule fires on
+       every correct early-stopping conversion, and the repair round "fixes" it
+       by bolting an identity function onto the predictions (observed on
+       nyc_taxi 0005).
+     - a **custom transformer that is a UDF in disguise**: a `TransformerMixin`
+       whose `transform` builds ≥3 named columns out of plain pandas with no
+       loop over discovered columns. `apply_func(engineer_features)` and
+       `class FeatureEngineer` collapse into the same single opaque node, and
+       only the first one used to be caught. Exempt: a `for`/comprehension in
+       `transform` (the sanctioned pitfall-20 case), a `fit` that learns state,
+       and the `GetXY` shape (`fit_transform` + dict).
+     - a **gratuitous wrapper estimator**: `fit` splits the fold's rows and fits
+       exactly one inner model, i.e. the wrapper exists only to hold an inner
+       split, which is `GetXY` + `fit_kwargs` written as an opaque node. A `for`
+       loop or a second fitted estimator in `fit` exempts it (torch loop,
+       internal ensemble — the cases a wrapper is *for*).
+     - a **kwarg name assembled by concatenation** (`"eval" + "_set"`). It
+       defeats nothing, but it is a reliable tell that the model knew it was
+       breaking a rule and routed around it.
+     - **early stopping deleted outright** — the only check that reads the
+       ORIGINAL as well as the candidate (`validate(..., original=...)`, filled
+       in automatically by `skrubify_file` and by `--check`). If the original
+       early-stops in any spelling and the candidate does so in none, that is an
+       error: it trains the full `n_estimators` and moves the score by far more
+       than any tolerance. Without an original the check simply does not fire.
    - *plan build*: the file is imported in a **subprocess** under
      `skrub.config_context(eager_data_ops=False)`, so the recorded read is never
      executed — the graph is built, `pred` is located, and the marks/CV/param-grid

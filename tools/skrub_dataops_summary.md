@@ -237,7 +237,39 @@ plan. Useful shapes:
   and averages becomes one splitter yielding all 3×k folds (`mean_test_score` is
   then the mean over every fold, which is what the script computed).
 - **a fixed hold-out** — `ShuffleSplit(n_splits=1, test_size=t, random_state=r)`
-  reproduces a single `train_test_split(test_size=t, random_state=r)`.
+  reproduces a single `train_test_split(test_size=t, random_state=r)` *exactly*:
+  `train_test_split` delegates to that splitter and returns its first split, so
+  the indices are bit-identical (same for `StratifiedShuffleSplit` when the
+  original passed `stratify=`). This substitution is an identity, not an
+  approximation — which is what makes it safe, and what the next bullet is not.
+- **one fold of a k-fold** — a script that builds a `KFold`/`StratifiedKFold`
+  and `break`s out of the loop after the first fold scored ONE hold-out, not k:
+  ```python
+  class FirstFold(BaseCrossValidator):
+      """One fold of any splitter -- the original's `for ...: break`."""
+
+      def __init__(self, cv):
+          self.cv = cv
+
+      def get_n_splits(self, X=None, y=None, groups=None):
+          return 1
+
+      def split(self, X, y=None, groups=None):
+          yield next(iter(self.cv.split(X, y, groups)))
+  ```
+  `cv=FirstFold(StratifiedKFold(5, shuffle=True, random_state=42))` yields that
+  fold's exact row indices (verified). Two wrong ways to write this:
+  - **a same-sized `ShuffleSplit`/`StratifiedShuffleSplit`.** It looks
+    equivalent and is not. Against `StratifiedKFold(5, shuffle=True,
+    random_state=42)` fold 0 on a 3662-row, 5-class target, both give 733
+    validation rows with identical per-class counts `[361 74 200 39 59]` — and
+    share only **160 of those 733 rows** (21.8%, i.e. chance). Same shape, a
+    different sample, a different score. `StratifiedKFold` deals each class's
+    shuffled indices round-robin into k bins; the shuffle-splitters draw an
+    independent permutation per class. Same `random_state`, different rows.
+  - **passing the bare `KFold`/`StratifiedKFold`.** That runs all k folds and
+    reports their mean — neither the original's number nor its cost (k× the
+    training time, which for a deep-learning pipeline is the whole budget).
 
 **Multiple input tables:** give each its own variable and record the join with the
 pandas API.

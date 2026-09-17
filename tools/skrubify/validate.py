@@ -123,9 +123,15 @@ def build_plan(path: Path, python: str | None = None, timeout: int = 300) -> tup
 
 
 def validate(path: Path, *, python: str | None = None, strict: bool = False,
-             build: bool = True, timeout: int = 300) -> Validation:
+             build: bool = True, timeout: int = 300,
+             original: str | Path | None = None) -> Validation:
+    """``original`` is the script being converted. A few defects are only
+    visible by comparison -- deleted early stopping above all -- so pass it
+    whenever it is known; without it those checks simply do not fire."""
     source = Path(path).read_text()
-    checks = run_checks(source, strict=strict)
+    if isinstance(original, Path):
+        original = original.read_text() if original.is_file() else None
+    checks = run_checks(source, strict=strict, original=original)
     if not build:
         return Validation(checks=checks)
     ok, error, info = build_plan(Path(path), python=python, timeout=timeout)
