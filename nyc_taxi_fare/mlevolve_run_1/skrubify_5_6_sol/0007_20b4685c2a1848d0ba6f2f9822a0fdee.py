@@ -2,61 +2,22 @@ import numpy as np
 import pandas as pd
 import skrub
 import lightgbm as lgb
-from sklearn.base import BaseEstimator, RegressorMixin, TransformerMixin, clone
-from sklearn.model_selection import BaseCrossValidator
-from skrub import selectors as s
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.model_selection import BaseCrossValidator, train_test_split
 
 
-CHUNK_SIZE = 2_000_000
-MAX_ROWS_PER_CHUNK = 400_000
-MAX_TOTAL_ROWS = 10_000_000
+class ChunkSampleHoldout(BaseCrossValidator):
+    """Reproduce the original chunk caps, row limit, shuffle, and 80/20 split."""
 
-
-def cap_chunk_rows(chunk):
-    """Reproduce the original per-read-chunk sampling operation."""
-    if len(chunk) > MAX_ROWS_PER_CHUNK:
-        return chunk.sample(n=MAX_ROWS_PER_CHUNK, random_state=42)
-    return chunk
-
-
-class Float32Finite(TransformerMixin, BaseEstimator):
-    """Reproduce DataFrame.values.astype(float32) and np.nan_to_num."""
-
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        values = np.asarray(X, dtype=np.float32)
-        values = np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
-        # Return a DataFrame, not the bare ndarray: skrub rejects a transformer
-        # that takes a pandas container and hands back numpy. Same values, same
-        # float32 dtype, same column names and order.
-        return pd.DataFrame(values, columns=X.columns, index=X.index)
-
-
-class Float32TargetRegressor(RegressorMixin, BaseEstimator):
-    """Convert the training target exactly as the original did inside each fit."""
-
-    def __init__(self, estimator):
-        self.estimator = estimator
-
-    def fit(self, X, y):
-        y_float32 = np.asarray(y, dtype=np.float32)
-        y_float32 = np.nan_to_num(
-            y_float32, nan=0.0, posinf=0.0, neginf=0.0
-        )
-        self.estimator_ = clone(self.estimator)
-        self.estimator_.fit(X, y_float32)
-        return self
-
-    def predict(self, X):
-        return self.estimator_.predict(X)
-
-
-class ShuffledFirst80Split(BaseCrossValidator):
-    """Match sample(frac=1, random_state=42), then take the first 80% for train."""
-
-    def __init__(self, train_fraction=0.8, random_state=42):
+    def __init__(
+        self,
+        max_rows_per_chunk=400_000,
+        total_row_limit=10_000_000,
+        train_fraction=0.8,
+        random_state=42,
+    ):
+        self.max_rows_per_chunk = max_rows_per_chunk
+        self.total_row_limit = total_row_limit
         self.train_fraction = train_fraction
         self.random_state = random_state
 
@@ -64,158 +25,216 @@ class ShuffledFirst80Split(BaseCrossValidator):
         return 1
 
     def split(self, X, y=None, groups=None):
-        indices = np.random.RandomState(self.random_state).permutation(len(X))
-        split_idx = int(len(indices) * self.train_fraction)
-        yield indices[:split_idx], indices[split_idx:]
+        if groups is None:
+            raise ValueError("ChunkSampleHoldout requires chunk IDs via groups.")
+
+        chunk_ids = np.asarray(groups).reshape(-1)
+        selected_parts = []
+        total_rows = 0
+
+        # The original restarted random_state=42 for every oversized CSV chunk.
+        for chunk_id in pd.unique(chunk_ids):
+            chunk_positions = np.flatnonzero(chunk_ids == chunk_id)
+
+            if len(chunk_positions) > self.max_rows_per_chunk:
+                chunk_positions = (
+                    pd.Series(chunk_positions)
+                    .sample(
+                        n=self.max_rows_per_chunk,
+                        random_state=self.random_state,
+                    )
+                    .to_numpy()
+                )
+
+            selected_parts.append(chunk_positions)
+            total_rows += len(chunk_positions)
+
+            # As in the original, the chunk that crosses the limit is retained
+            # in full, so the selected count may exceed total_row_limit.
+            if total_rows >= self.total_row_limit:
+                break
+
+        selected = np.concatenate(selected_parts)
+        shuffled = (
+            pd.Series(selected)
+            .sample(frac=1.0, random_state=self.random_state)
+            .to_numpy()
+        )
+
+        split_idx = int(len(shuffled) * self.train_fraction)
+        yield shuffled[:split_idx], shuffled[split_idx:]
+
+
+class GetXY(TransformerMixin, BaseEstimator):
+    """Carve an early-stopping set out of this outer fold's training rows."""
+
+    def __init__(self, test_size=0.2, random_state=42):
+        self.test_size = test_size
+        self.random_state = random_state
+
+    def fit(self, X, y):
+        return self
+
+    def fit_transform(self, X, y):
+        parts = train_test_split(
+            X,
+            y,
+            test_size=self.test_size,
+            random_state=self.random_state,
+        )
+        return dict(zip(("X", "X_val", "y", "y_val"), parts))
+
+    def transform(self, X):
+        return {"X": X, "X_val": None, "y": None, "y_val": None}
+
+
+def restore_target_domain(values, mode):
+    """Return predictions in the raw cost domain used by mark_as_y."""
+    if mode == "fit":
+        # In fit mode a prediction node evaluates to the fitted estimator.
+        return values
+    # Casting the training target to float32 did not change its units or apply a
+    # nonlinear transform; conversion back to float64 is its prediction-side
+    # inverse for scoring against the raw target node.
+    return np.asarray(values, dtype=np.float64)
 
 
 with skrub.config_context(eager_data_ops=False):
-    # 1. Load Data — the original chunked CSV ingestion is replaced by one
-    #    recorded read. Test-set processing, parquet dumps, directory creation,
-    #    and submission generation are omitted because they do not produce the
-    #    validation score.
+    # 1. Load Data — record one read of train.csv. Test-set processing,
+    #    parquet files, submission generation, directories, and progress output
+    #    are omitted because they do not contribute to the validation score.
     data = skrub.as_data_op("./input/train.csv").skb.apply_func(pd.read_csv)
 
-    # 2. Prepare data. Preserve the original physical 2,000,000-row chunk
-    #    boundaries so its filtering, per-chunk 400,000-row cap, and
-    #    10,000,000-retained-row stopping rule select the same training rows.
-    chunked = data.assign(_source_chunk=data.index // CHUNK_SIZE)
+    # Preserve the original 2,000,000-row CSV chunk boundaries. The custom CV
+    # splitter below performs the original per-chunk sampling, cumulative
+    # 10,000,000-row stopping rule, shuffle, and final holdout without chunked IO.
+    data = data.assign(_chunk=data.index // 2_000_000)
 
-    filtered = chunked[chunked["cost"] > 0]
-    filtered = filtered[filtered["cost"] < 50_000]
+    # 2. Prepare Data — faithfully record the content-dependent row filters
+    #    before marking X and y because these filters change which rows are scored.
+    data = data[data["cost"] > 0]
+    data = data[data["cost"] < 50_000]
 
-    # Coordinate conversion and bounds filtering occurred before sampling in
-    # the original and therefore remain before the X/y marks.
-    origin_x = filtered["origin_x"].skb.apply_func(
-        pd.to_numeric, errors="coerce"
-    )
-    origin_y = filtered["origin_y"].skb.apply_func(
-        pd.to_numeric, errors="coerce"
-    )
-    dest_x = filtered["dest_x"].skb.apply_func(
-        pd.to_numeric, errors="coerce"
-    )
-    dest_y = filtered["dest_y"].skb.apply_func(
-        pd.to_numeric, errors="coerce"
-    )
+    origin_x = data["origin_x"].skb.apply_func(pd.to_numeric, errors="coerce")
+    data = data.assign(origin_x=origin_x)
+    data = data[(data["origin_x"] >= -180) & (data["origin_x"] <= 180)]
 
-    filtered = filtered.assign(
-        origin_x=origin_x,
-        origin_y=origin_y,
-        dest_x=dest_x,
-        dest_y=dest_y,
-    )
-    valid_coordinates = (
-        filtered["origin_x"].between(-180, 180)
-        & filtered["origin_y"].between(-180, 180)
-        & filtered["dest_x"].between(-180, 180)
-        & filtered["dest_y"].between(-180, 180)
-    )
-    filtered = filtered[valid_coordinates]
+    origin_y = data["origin_y"].skb.apply_func(pd.to_numeric, errors="coerce")
+    data = data.assign(origin_y=origin_y)
+    data = data[(data["origin_y"] >= -180) & (data["origin_y"] <= 180)]
 
-    # GroupBy.apply reproduces the original single sampling operation on each
-    # physical input chunk.
-    # group_keys=True + reset_index keeps the grouping column: pandas 3 excludes
-    # a label-keyed grouper from the frames it passes to apply(), so with
-    # group_keys=False "_source_chunk" would be missing from the result.
-    sampled = filtered.groupby(
-        "_source_chunk", group_keys=True, sort=True
-    ).apply(cap_chunk_rows).reset_index(level=0)
+    dest_x = data["dest_x"].skb.apply_func(pd.to_numeric, errors="coerce")
+    data = data.assign(dest_x=dest_x)
+    data = data[(data["dest_x"] >= -180) & (data["dest_x"] <= 180)]
 
-    retained_per_chunk = sampled.groupby("_source_chunk").size().sort_index()
-    retained_before_chunk = retained_per_chunk.cumsum().shift(fill_value=0)
-    included_chunks = retained_before_chunk[
-        retained_before_chunk < MAX_TOTAL_ROWS
-    ].index
-    prepared = sampled[
-        sampled["_source_chunk"].isin(included_chunks)
-    ].reset_index(drop=True)
-    prepared = prepared.drop(columns=["_source_chunk"])
+    dest_y = data["dest_y"].skb.apply_func(pd.to_numeric, errors="coerce")
+    data = data.assign(dest_y=dest_y)
+    data = data[(data["dest_y"] >= -180) & (data["dest_y"] <= 180)]
+    data = data.reset_index(drop=True)
 
-    # Mark the RAW target as required. The original float32/nan_to_num target
-    # conversion is performed inside Float32TargetRegressor.fit, so it is
-    # recomputed per fold without changing the scoring domain.
-    y = prepared["cost"].skb.mark_as_y()
-
-    # The custom one-fold splitter exactly reproduces the original seeded
-    # shuffle followed by the first-80%/last-20% positional split.
-    X = prepared.drop(columns=["cost"]).skb.mark_as_X(
-        cv=ShuffledFirst80Split(train_fraction=0.8, random_state=42),
-        split_kwargs={},
+    # Mark the RAW target. The custom splitter reproduces the original sampled,
+    # shuffled 80/20 holdout and excludes rows beyond the original chunk limit.
+    y = data["cost"].skb.mark_as_y()
+    X = data.drop(columns=["cost"]).skb.mark_as_X(
+        cv=ChunkSampleHoldout(
+            max_rows_per_chunk=400_000,
+            total_row_limit=10_000_000,
+            train_fraction=0.8,
+            random_state=42,
+        ),
+        split_kwargs={"groups": data["_chunk"]},
     )
 
-    # 3. Recorded feature engineering. Explicit conversions preserve the
-    # original dtype handling; clipping and fillna are retained exactly.
+    # 3. Recorded feature engineering, preserving the original named columns
+    #    and their order.
     start_time = X["start_time"].skb.apply_func(
-        pd.to_datetime, errors="coerce", utc=True
+        pd.to_datetime,
+        errors="coerce",
+        utc=True,
     )
-    origin_x = (
-        X["origin_x"]
-        .skb.apply_func(pd.to_numeric, errors="coerce")
-        .clip(-180, 180)
-        .fillna(0)
-    )
-    origin_y = (
-        X["origin_y"]
-        .skb.apply_func(pd.to_numeric, errors="coerce")
-        .clip(-180, 180)
-        .fillna(0)
-    )
-    dest_x = (
-        X["dest_x"]
-        .skb.apply_func(pd.to_numeric, errors="coerce")
-        .clip(-180, 180)
-        .fillna(0)
-    )
-    dest_y = (
-        X["dest_y"]
-        .skb.apply_func(pd.to_numeric, errors="coerce")
-        .clip(-180, 180)
-        .fillna(0)
-    )
-
-    dx = dest_x - origin_x
-    dy = dest_y - origin_y
-
-    features = X.assign(
+    X_feat = X.assign(
         start_time=start_time,
         hour=start_time.dt.hour,
         dayofweek=start_time.dt.dayofweek,
         month=start_time.dt.month,
         year=start_time.dt.year,
         day=start_time.dt.day,
-        origin_x=origin_x,
-        origin_y=origin_y,
-        dest_x=dest_x,
-        dest_y=dest_y,
+    )
+
+    origin_x = X_feat["origin_x"].skb.apply_func(pd.to_numeric, errors="coerce")
+    origin_y = X_feat["origin_y"].skb.apply_func(pd.to_numeric, errors="coerce")
+    dest_x = X_feat["dest_x"].skb.apply_func(pd.to_numeric, errors="coerce")
+    dest_y = X_feat["dest_y"].skb.apply_func(pd.to_numeric, errors="coerce")
+
+    X_feat = X_feat.assign(
+        origin_x=origin_x.clip(-180, 180).fillna(0),
+        origin_y=origin_y.clip(-180, 180).fillna(0),
+        dest_x=dest_x.clip(-180, 180).fillna(0),
+        dest_y=dest_y.clip(-180, 180).fillna(0),
+    )
+
+    dx = X_feat["dest_x"] - X_feat["origin_x"]
+    dy = X_feat["dest_y"] - X_feat["origin_y"]
+    X_feat = X_feat.assign(
         dx=dx,
         dy=dy,
         euclidean_dist=(dx**2 + dy**2).skb.apply_func(np.sqrt),
-        manhattan_dist=(
-            dx.skb.apply_func(np.abs) + dy.skb.apply_func(np.abs)
-        ),
+        manhattan_dist=dx.skb.apply_func(np.abs) + dy.skb.apply_func(np.abs),
     )
 
-    # Match the dynamically discovered feature_cols: every column except the
-    # identifier and timestamp. The target is already absent -- mark_as_X was
-    # given `prepared.drop(columns=["cost"])` -- and s.cols() raises on a column
-    # that is not there, so "cost" must NOT be listed here.
-    model_features = features.skb.drop(
-        s.cols("record_id", "start_time")
-    ).skb.apply(Float32Finite())
+    # Match feature_cols and the original float32/nan_to_num conversion. The
+    # helper _chunk column is used only by the splitter and never by the model.
+    X_feat = X_feat.drop(columns=["record_id", "start_time", "_chunk"])
+    X_feat = (
+        X_feat.astype(np.float32)
+        .replace([np.inf, -np.inf], 0.0)
+        .fillna(0.0)
+    )
 
-    # Same LightGBM family and constructor hyperparameters. The original early
-    # stopping used the outer validation rows as eval_set; a direct CV estimator
-    # has no separate eval_set, so early stopping and logging callbacks are
-    # removed while n_estimators=300 is retained.
-    base_model = lgb.LGBMRegressor(
+    # The original explicitly converted y to float32 and applied nan_to_num.
+    # Keep that target preprocessing downstream of the raw mark, then restore
+    # prediction values to the raw target domain before scoring.
+    y_model = (
+        y.astype(np.float32)
+        .replace([np.inf, -np.inf], 0.0)
+        .fillna(0.0)
+    )
+
+    # The original early-stopped on the same validation rows it scored, which
+    # leaks and cannot be reproduced honestly under outer validation. Keep its
+    # 20-round patience, 300-estimator limit, and 20% split fraction by carving
+    # the early-stopping set from each outer fold's training rows.
+    X_y = X_feat.skb.apply(
+        GetXY(test_size=0.2, random_state=42),
+        y=y_model,
+        how="no_wrap",
+    )
+    X_fit = X_y["X"]
+    y_fit = X_y.get("y", y_model)
+    X_val = X_y["X_val"]
+    y_val = X_y["y_val"]
+
+    model = lgb.LGBMRegressor(
         n_estimators=300,
         learning_rate=0.05,
         random_state=42,
         n_jobs=-1,
     )
-    model = Float32TargetRegressor(estimator=base_model)
-    pred = model_features.skb.apply(model, y=y)
+    pred_model_domain = X_fit.skb.apply(
+        model,
+        y=y_fit,
+        fit_kwargs={
+            "eval_set": [(X_val, y_val)],
+            "callbacks": [lgb.early_stopping(20, verbose=False)],
+        },
+    )
+
+    # Restore predictions after fitting on the transformed target. The eval-mode
+    # guard leaves the fitted estimator untouched in fit mode.
+    pred = pred_model_domain.skb.apply_func(
+        restore_target_domain,
+        skrub.eval_mode(),
+    )
 
     # 4. Score. No cv= here — the splitter attached to mark_as_X drives.
     if __name__ == "__main__":

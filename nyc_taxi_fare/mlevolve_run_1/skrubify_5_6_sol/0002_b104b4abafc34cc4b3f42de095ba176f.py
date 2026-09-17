@@ -2,11 +2,12 @@ import numpy as np
 import pandas as pd
 import skrub
 from catboost import CatBoostRegressor
-from sklearn.model_selection import BaseCrossValidator
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.model_selection import BaseCrossValidator, train_test_split
 
 
-class OriginalPermutationHoldout(BaseCrossValidator):
-    """Reproduce np.random.seed(...), permutation, then an 80/20 positional split."""
+class OriginalPermutationSplit(BaseCrossValidator):
+    """Reproduce the original seeded permutation and first-80% training split."""
 
     def __init__(self, train_fraction=0.8, random_state=42):
         self.train_fraction = train_fraction
@@ -16,10 +17,32 @@ class OriginalPermutationHoldout(BaseCrossValidator):
         return 1
 
     def split(self, X, y=None, groups=None):
-        n_rows = len(X)
-        indices = np.random.RandomState(self.random_state).permutation(n_rows)
-        split_idx = int(n_rows * self.train_fraction)
+        indices = np.random.RandomState(self.random_state).permutation(len(X))
+        split_idx = int(len(X) * self.train_fraction)
         yield indices[:split_idx], indices[split_idx:]
+
+
+class GetXY(TransformerMixin, BaseEstimator):
+    """Carve an early-stopping eval set out of the current fold's training rows."""
+
+    def __init__(self, test_size=0.2, random_state=42):
+        self.test_size = test_size
+        self.random_state = random_state
+
+    def fit(self, X, y):
+        return self
+
+    def fit_transform(self, X, y):
+        parts = train_test_split(
+            X,
+            y,
+            test_size=self.test_size,
+            random_state=self.random_state,
+        )
+        return dict(zip(("X", "X_val", "y", "y_val"), parts))
+
+    def transform(self, X):
+        return {"X": X, "X_val": None, "y": None, "y_val": None}
 
 
 class CatBoostRegressorCloneable(CatBoostRegressor):
@@ -30,89 +53,101 @@ class CatBoostRegressorCloneable(CatBoostRegressor):
 
 
 with skrub.config_context(eager_data_ops=False):
-    # 1. Load Data — record one CSV read. The original chunked read was only an
-    #    OOM precaution; test-data loading, parquet files, directories, submission
-    #    generation, and progress printing are omitted because they do not produce
-    #    the cross-validated score.
+    # 1. Load Data -- record one CSV read. The original's chunk loop retained the
+    #    first 3,000,000 rows that passed its filters, so filtering the complete
+    #    recorded table and taking its first 3,000,000 valid rows is equivalent.
+    #    Test-set loading, parquet files, directories, and submission generation
+    #    are omitted because they do not contribute to the validation score.
     data = skrub.as_data_op("./input/train.csv").skb.apply_func(pd.read_csv)
 
-    # Preserve the original cleaning and its selection of the first 3,000,000
-    # valid rows. Row filtering and truncation happen before marking because they
-    # determine which rows participate in validation.
-    data = data.dropna(
-        subset=["cost", "origin_x", "origin_y", "dest_x", "dest_y"]
-    )
+    required = ["cost", "origin_x", "origin_y", "dest_x", "dest_y"]
+    filtered = data.dropna(subset=required)
     valid_mask = (
-        (data["origin_x"] >= -180)
-        & (data["origin_x"] <= 180)
-        & (data["origin_y"] >= -90)
-        & (data["origin_y"] <= 90)
-        & (data["dest_x"] >= -180)
-        & (data["dest_x"] <= 180)
-        & (data["dest_y"] >= -90)
-        & (data["dest_y"] <= 90)
-        & (data["cost"] >= 0)
+        (filtered["origin_x"] >= -180)
+        & (filtered["origin_x"] <= 180)
+        & (filtered["origin_y"] >= -90)
+        & (filtered["origin_y"] <= 90)
+        & (filtered["dest_x"] >= -180)
+        & (filtered["dest_x"] <= 180)
+        & (filtered["dest_y"] >= -90)
+        & (filtered["dest_y"] <= 90)
+        & (filtered["cost"] >= 0)
     )
-    data = data[valid_mask].reset_index(drop=True)
-    data = data.iloc[:3_000_000].reset_index(drop=True)
+    filtered = filtered[valid_mask]
+    filtered = filtered.iloc[:3_000_000].reset_index(drop=True)
 
-    # 2. Prepare Data — mark the raw target and design matrix. The custom
-    #    one-split cross-validator exactly preserves the original permutation:
-    #    the first floor(80%) shuffled rows train and the remaining rows validate.
-    y = data["cost"].skb.mark_as_y()
-    X = data.drop(columns=["cost"]).skb.mark_as_X(
-        cv=OriginalPermutationHoldout(train_fraction=0.8, random_state=42),
+    # 2. Prepare data: mark the RAW target and design matrix. The custom splitter
+    #    exactly preserves the original np.random.seed(42), permutation, and
+    #    first-80%/remaining-20% split rather than changing which permutation
+    #    segment is used for validation.
+    y = filtered["cost"].skb.mark_as_y()
+    X = filtered.drop(columns=["cost"]).skb.mark_as_X(
+        cv=OriginalPermutationSplit(train_fraction=0.8, random_state=42),
         split_kwargs={},
     )
 
-    # 3. Recorded feature engineering, preserving the original column creation
-    #    order and constants.
+    # 3. Recorded feature engineering, followed by the original CatBoost model.
     start_time = X["start_time"].skb.apply_func(
         pd.to_datetime, errors="coerce", utc=True
     )
-    features = X.assign(
-        hour=start_time.dt.hour.fillna(0).astype(int),
-        dayofweek=start_time.dt.dayofweek.fillna(0).astype(int),
-        month=start_time.dt.month.fillna(1).astype(int),
-        year=start_time.dt.year.fillna(2012).astype(int),
-    )
-    features = features.assign(
-        is_weekend=features["dayofweek"].isin([5, 6]).astype(int)
-    )
+    hour = start_time.dt.hour.fillna(0).astype(int)
+    dayofweek = start_time.dt.dayofweek.fillna(0).astype(int)
+    month = start_time.dt.month.fillna(1).astype(int)
+    year = start_time.dt.year.fillna(2012).astype(int)
 
-    dx = features["dest_x"] - features["origin_x"]
-    dy = features["dest_y"] - features["origin_y"]
-    features = features.assign(
+    dx = X["dest_x"] - X["origin_x"]
+    dy = X["dest_y"] - X["origin_y"]
+
+    lat1 = X["origin_y"].skb.apply_func(np.radians)
+    lon1 = X["origin_x"].skb.apply_func(np.radians)
+    lat2 = X["dest_y"].skb.apply_func(np.radians)
+    lon2 = X["dest_x"].skb.apply_func(np.radians)
+
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    half_dlat_sin = (dlat / 2.0).skb.apply_func(np.sin)
+    half_dlon_sin = (dlon / 2.0).skb.apply_func(np.sin)
+    a = (
+        half_dlat_sin**2
+        + lat1.skb.apply_func(np.cos)
+        * lat2.skb.apply_func(np.cos)
+        * half_dlon_sin**2
+    )
+    sqrt_a = a.skb.apply_func(np.sqrt)
+    clipped_sqrt_a = sqrt_a.skb.apply_func(np.clip, 0, 1)
+    haversine_c = 2 * clipped_sqrt_a.skb.apply_func(np.arcsin)
+
+    features = X.assign(
+        hour=hour,
+        dayofweek=dayofweek,
+        month=month,
+        year=year,
+        is_weekend=dayofweek.isin([5, 6]).astype(int),
         euclidean_dist=(dx**2 + dy**2).skb.apply_func(np.sqrt),
         abs_dx=dx.skb.apply_func(np.abs),
         abs_dy=dy.skb.apply_func(np.abs),
+        haversine_dist=haversine_c * 6371.0,
     )
 
-    lat1 = features["origin_y"].skb.apply_func(np.radians)
-    lon1 = features["origin_x"].skb.apply_func(np.radians)
-    lat2 = features["dest_y"].skb.apply_func(np.radians)
-    lon2 = features["dest_x"].skb.apply_func(np.radians)
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
+    # These columns were excluded from feature_cols in the original. Applying
+    # fillna after dropping them preserves the values and order of every column
+    # actually supplied to CatBoost.
+    features = features.drop(columns=["record_id", "start_time"]).fillna(0)
 
-    haversine_a = (
-        (dlat / 2.0).skb.apply_func(np.sin) ** 2
-        + lat1.skb.apply_func(np.cos)
-        * lat2.skb.apply_func(np.cos)
-        * (dlon / 2.0).skb.apply_func(np.sin) ** 2
+    # The original early-stopped on the same validation rows it reported, which
+    # leaks validation information and cannot be reproduced honestly by outer
+    # CV. Keep iterations=1500 and patience=50, but carve a 20% eval set from
+    # each outer fold's training rows through recorded GetXY operations.
+    X_y = features.skb.apply(
+        GetXY(test_size=0.2, random_state=42),
+        y=y,
+        how="no_wrap",
     )
-    haversine_root = haversine_a.skb.apply_func(np.sqrt)
-    haversine_clipped = haversine_root.clip(0, 1)
-    haversine_c = 2 * haversine_clipped.skb.apply_func(np.arcsin)
+    X_fit = X_y["X"]
+    y_fit = X_y.get("y", y)
+    X_val = X_y["X_val"]
+    y_val = X_y["y_val"]
 
-    features = features.assign(haversine_dist=haversine_c * 6371.0)
-    features = features.fillna(0)
-    model_features = features.drop(columns=["record_id", "start_time"])
-
-    # CatBoost keeps every original constructor hyperparameter. The original used
-    # the outer validation rows as an eval_set for early stopping; a DataOps CV
-    # estimator cannot receive its held-out fold as fit-time eval_set, so
-    # early_stopping_rounds=50 is removed while the 1,500-iteration limit remains.
     model = CatBoostRegressorCloneable(
         iterations=1500,
         learning_rate=0.05,
@@ -124,11 +159,18 @@ with skrub.config_context(eager_data_ops=False):
         thread_count=-1,
         verbose=False,
     )
-    pred = model_features.skb.apply(model, y=y)
 
-    # 4. Score — no cv= here; the original permutation holdout on mark_as_X drives.
-    #    Validation predictions were not clipped in the original, so no clipping
-    #    is applied here. Its clipping affected submission predictions only.
+    pred = X_fit.skb.apply(
+        model,
+        y=y_fit,
+        fit_kwargs={
+            "eval_set": (X_val, y_val),
+            "early_stopping_rounds": 50,
+            "verbose": False,
+        },
+    )
+
+    # 4. Score. No cv= here -- the splitter on mark_as_X drives.
     if __name__ == "__main__":
         search = pred.skb.make_grid_search(
             n_jobs=1,

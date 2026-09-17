@@ -1,56 +1,77 @@
-import os
-
 import numpy as np
 import pandas as pd
 import skrub
 import xgboost as xgb
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.impute import SimpleImputer
-from sklearn.model_selection import ShuffleSplit
+from sklearn.model_selection import ShuffleSplit, train_test_split
 
 
-INPUT_DIR = "./input"
+class GetXY(TransformerMixin, BaseEstimator):
+    """Carve an early-stopping evaluation set out of each fold's training rows."""
+
+    def __init__(self, test_size=0.2, random_state=42):
+        self.test_size = test_size
+        self.random_state = random_state
+
+    def fit(self, X, y):
+        return self
+
+    def fit_transform(self, X, y):
+        parts = train_test_split(
+            X,
+            y,
+            test_size=self.test_size,
+            random_state=self.random_state,
+        )
+        return dict(zip(("X", "X_val", "y", "y_val"), parts))
+
+    def transform(self, X):
+        return {"X": X, "X_val": None, "y": None, "y_val": None}
 
 
-def clip_predictions(predictions, mode):
-    """Apply the original non-negative clipping only when predicting."""
+def clip_predictions(values, mode):
+    """Apply the original non-negative clipping only in prediction modes."""
     if mode == "fit":
-        return predictions
-    return np.clip(predictions, 0, None)
+        return None
+    return np.clip(values, 0, None)
 
 
 with skrub.config_context(eager_data_ops=False):
-    # 1. Load Data -- record one CSV read. The original's chunked reads,
-    #    intermediate parquet files, test-set processing, and submission output
-    #    are omitted because they do not contribute to the validation score.
-    data = skrub.as_data_op(
-        os.path.join(INPUT_DIR, "train.csv")
-    ).skb.apply_func(pd.read_csv)
+    # 1. Load Data -- recorded read.
+    # The original's chunked reads, parquet round-trip, test-set processing, and
+    # submission generation are omitted because they do not produce the
+    # validation score.
+    data = skrub.as_data_op("./input/train.csv").skb.apply_func(pd.read_csv)
 
-    # 2. Prepare data. The original removed missing/non-positive targets before
-    #    splitting, so this row filtering remains before mark_as_X/mark_as_y.
-    data = data.dropna(subset=["cost"])
-    data = data[data["cost"] > 0].reset_index(drop=True)
+    # The original removes invalid target rows before splitting. Row filtering
+    # therefore remains before mark_as_X/mark_as_y and the index is reset to
+    # reproduce pd.concat(..., ignore_index=True).
+    filtered = data.dropna(subset=["cost"])
+    filtered = filtered[filtered["cost"] > 0].reset_index(drop=True)
 
-    # Mark the raw target. The original single train_test_split becomes an
-    # equivalent one-split ShuffleSplit attached to mark_as_X.
-    y = data["cost"].skb.mark_as_y()
-    X = data.drop(columns=["record_id", "cost"]).skb.mark_as_X(
+    # 2. Prepare data: mark the RAW target and design matrix. The original single
+    # 80/20 train_test_split becomes an equivalent one-split ShuffleSplit.
+    y = filtered["cost"].skb.mark_as_y()
+    X = filtered.drop(columns=["cost", "record_id"]).skb.mark_as_X(
         cv=ShuffleSplit(n_splits=1, test_size=0.2, random_state=42),
         split_kwargs={},
     )
 
-    # 3. Recorded preprocessing and feature engineering.
-    # Coordinate medians are now learned from each training fold through
-    # SimpleImputer, fixing the original full-table preprocessing leak.
-    coords = X[["origin_x", "dest_x", "origin_y", "dest_y"]]
-    coords = coords.assign(
-        origin_x=coords["origin_x"].clip(-75.0, -72.0),
-        dest_x=coords["dest_x"].clip(-75.0, -72.0),
-        origin_y=coords["origin_y"].clip(40.0, 42.0),
-        dest_y=coords["dest_y"].clip(40.0, 42.0),
-    ).skb.apply(SimpleImputer(strategy="median"))
+    # 3. Recorded preprocessing / feature engineering, then the model.
+    # Coordinate clipping is recorded explicitly. The original calculated
+    # coordinate medians before its outer split (within each input chunk), which
+    # leaked validation information. SimpleImputer learns the same per-column
+    # median operation from each outer fold's training rows instead.
+    coordinates = X[["origin_x", "dest_x", "origin_y", "dest_y"]]
+    coordinates = coordinates.assign(
+        origin_x=coordinates["origin_x"].clip(-75.0, -72.0),
+        dest_x=coordinates["dest_x"].clip(-75.0, -72.0),
+        origin_y=coordinates["origin_y"].clip(40.0, 42.0),
+        dest_y=coordinates["dest_y"].clip(40.0, 42.0),
+    )
+    coordinates = coordinates.skb.apply(SimpleImputer(strategy="median"))
 
-    unit_count = X["unit_count"].fillna(1)
     start_time = X["start_time"].skb.apply_func(
         pd.to_datetime, errors="coerce"
     )
@@ -58,39 +79,38 @@ with skrub.config_context(eager_data_ops=False):
     dayofweek = start_time.dt.dayofweek.fillna(0).astype(int)
     month = start_time.dt.month.fillna(1).astype(int)
     year = start_time.dt.year.fillna(2012).astype(int)
+    unit_count = X["unit_count"].fillna(1)
 
-    dx = coords["dest_x"] - coords["origin_x"]
-    dy = coords["dest_y"] - coords["origin_y"]
+    dx = coordinates["dest_x"] - coordinates["origin_x"]
+    dy = coordinates["dest_y"] - coordinates["origin_y"]
     euclidean_dist = (dx**2 + dy**2).skb.apply_func(np.sqrt)
     manhattan_dist = (
         dx.skb.apply_func(np.abs) + dy.skb.apply_func(np.abs)
     )
     bearing = dy.skb.apply_func(np.arctan2, dx)
 
-    lat1 = coords["origin_y"].skb.apply_func(np.radians)
-    lon1 = coords["origin_x"].skb.apply_func(np.radians)
-    lat2 = coords["dest_y"].skb.apply_func(np.radians)
-    lon2 = coords["dest_x"].skb.apply_func(np.radians)
+    lat1 = coordinates["origin_y"].skb.apply_func(np.radians)
+    lon1 = coordinates["origin_x"].skb.apply_func(np.radians)
+    lat2 = coordinates["dest_y"].skb.apply_func(np.radians)
+    lon2 = coordinates["dest_x"].skb.apply_func(np.radians)
     dlat = lat2 - lat1
     dlon = lon2 - lon1
-
     haversine_a = (
         (dlat / 2.0).skb.apply_func(np.sin) ** 2
         + lat1.skb.apply_func(np.cos)
         * lat2.skb.apply_func(np.cos)
-        * ((dlon / 2.0).skb.apply_func(np.sin) ** 2)
+        * (dlon / 2.0).skb.apply_func(np.sin) ** 2
     )
     haversine_dist = (
-        2
-        * 6371.0
-        * haversine_a.skb.apply_func(np.sqrt).skb.apply_func(np.arcsin)
+        haversine_a.skb.apply_func(np.sqrt).skb.apply_func(np.arcsin)
+        * (2 * 6371.0)
     )
 
-    X_feat = X.assign(
-        origin_x=coords["origin_x"],
-        dest_x=coords["dest_x"],
-        origin_y=coords["origin_y"],
-        dest_y=coords["dest_y"],
+    features = X.assign(
+        origin_x=coordinates["origin_x"],
+        dest_x=coordinates["dest_x"],
+        origin_y=coordinates["origin_y"],
+        dest_y=coordinates["dest_y"],
         unit_count=unit_count,
         hour=hour,
         dayofweek=dayofweek,
@@ -100,10 +120,10 @@ with skrub.config_context(eager_data_ops=False):
         manhattan_dist=manhattan_dist,
         bearing=bearing,
         haversine_dist=haversine_dist,
-        origin_x_bin=coords["origin_x"].skb.apply_func(np.round, 2),
-        origin_y_bin=coords["origin_y"].skb.apply_func(np.round, 2),
-        dest_x_bin=coords["dest_x"].skb.apply_func(np.round, 2),
-        dest_y_bin=coords["dest_y"].skb.apply_func(np.round, 2),
+        origin_x_bin=coordinates["origin_x"].skb.apply_func(np.round, 2),
+        origin_y_bin=coordinates["origin_y"].skb.apply_func(np.round, 2),
+        dest_x_bin=coordinates["dest_x"].skb.apply_func(np.round, 2),
+        dest_y_bin=coordinates["dest_y"].skb.apply_func(np.round, 2),
         unit_distance_ratio=euclidean_dist / (unit_count + 1e-5),
         manhattan_euclidean_ratio=(
             manhattan_dist / (euclidean_dist + 1e-5)
@@ -114,11 +134,20 @@ with skrub.config_context(eager_data_ops=False):
         month_cos=(2 * np.pi * month / 12).skb.apply_func(np.cos),
     ).drop(columns=["start_time"])
 
-    # Same XGBoost model family and fit hyperparameters. The original
-    # early_stopping_rounds=50 depended on passing the outer validation set as
-    # eval_set; a DataOps estimator does not receive its held-out fold during
-    # fit, so early stopping and eval_set are removed while outer validation is
-    # driven by the ShuffleSplit above.
+    # The original used its scored holdout as XGBoost's early-stopping eval set,
+    # which leaks information from the reported validation rows. To retain its
+    # n_estimators, patience, and 20% eval fraction honestly, GetXY carves an
+    # inner 20% eval set from each outer fold's training rows.
+    X_y = features.skb.apply(
+        GetXY(test_size=0.2, random_state=42),
+        y=y,
+        how="no_wrap",
+    )
+    X_fit = X_y["X"]
+    y_fit = X_y.get("y", y)
+    X_val = X_y["X_val"]
+    y_val = X_y["y_val"]
+
     model = xgb.XGBRegressor(
         n_estimators=2000,
         learning_rate=0.03,
@@ -131,18 +160,26 @@ with skrub.config_context(eager_data_ops=False):
         tree_method="hist",
         objective="reg:squarederror",
         eval_metric="rmse",
+        early_stopping_rounds=50,
         random_state=42,
         n_jobs=-1,
     )
-    pred_raw = X_feat.skb.apply(model, y=y)
-
-    # Preserve the original post-prediction clipping. It is gated because a
-    # prediction node evaluates to the fitted estimator in fit mode.
-    pred = pred_raw.skb.apply_func(
-        clip_predictions, skrub.eval_mode()
+    pred_raw = X_fit.skb.apply(
+        model,
+        y=y_fit,
+        fit_kwargs={
+            "eval_set": [(X_val, y_val)],
+            "verbose": False,
+        },
     )
 
-    # 4. Score. No cv= here: the splitter on mark_as_X drives validation.
+    # Preserve the original prediction post-processing exactly.
+    pred = pred_raw.skb.apply_func(
+        clip_predictions,
+        skrub.eval_mode(),
+    )
+
+    # 4. Score. No cv= here -- the splitter on mark_as_X drives.
     if __name__ == "__main__":
         search = pred.skb.make_grid_search(
             n_jobs=1,
@@ -152,8 +189,8 @@ with skrub.config_context(eager_data_ops=False):
         )
         print(search.results_)
         for variant_score in search.results_["mean_test_score"]:
-            print(f"Variant score: {-variant_score}")
+            print(f"Variant score: {variant_score}")
         print(
             "Final Validation Performance: "
-            f"{-search.results_['mean_test_score'].iloc[0]}"
+            f"{search.results_['mean_test_score'].iloc[0]}"
         )
