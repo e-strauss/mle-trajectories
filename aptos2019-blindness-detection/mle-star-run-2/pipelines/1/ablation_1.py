@@ -6,7 +6,7 @@ import pandas as pd
 from PIL import Image
 from scipy.optimize import minimize
 from sklearn.metrics import cohen_kappa_score
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedShuffleSplit
 import timm
 import torch
 import torch.nn as nn
@@ -189,12 +189,10 @@ def main():
     seed_everything(42)
 
     df = pd.read_csv(TRAIN_CSV)
-    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-
-    for train_idx, val_idx in skf.split(df, df["diagnosis"]):
-        train_df = df.iloc[train_idx].reset_index(drop=True)
-        val_df = df.iloc[val_idx].reset_index(drop=True)
-        break
+    sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+    train_idx, val_idx = next(sss.split(df, df["diagnosis"]))
+    train_df = df.iloc[train_idx].reset_index(drop=True)
+    val_df = df.iloc[val_idx].reset_index(drop=True)
 
     img_size = 384
     train_transform = transforms.Compose([
