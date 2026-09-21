@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "catboost>=1.2.10",
+    "graphviz>=0.21",
+    "ipykernel>=7.3.0",
     "lightgbm>=4.7.0",
     "litellm>=1.97.0",
     "psutil>=7.2.2",
@@ -28,5 +30,15 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["tools/pipeline_analyzer", "tools/skrubify"]
 
+# The default PyPI torch wheel is built against CUDA 13.0, which this machine's
+# driver (12.7) refuses -- torch.cuda.is_available() comes back False and every
+# pipeline silently falls back to CPU. Pin torch to the cu126 index, the same
+# build mle-star uses on this box.
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
 [tool.uv.sources]
-stratum-ai = { git = "https://github.com/deem-data/stratum.git", rev = "834dc02980379e8d6b97a04baeedc4ad3a888da6" }
+stratum-ai = { git = "https://github.com/deem-data/stratum.git", rev = "8b7f7ba3c632af28b138c388695988170d6874c3" }
+torch = { index = "pytorch-cu126" }

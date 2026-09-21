@@ -786,6 +786,91 @@ def _transformer_output_check(source: str) -> list[tuple[str, str]]:
     return out
 
 
+def _local_transformer_names(tree) -> set[str]:
+    """Classes defined in this file that skrub will treat as transformers."""
+    return {n.name for n in ast.walk(tree)
+            if isinstance(n, ast.ClassDef) and any(
+                isinstance(b, ast.Name) and b.id == "TransformerMixin" for b in n.bases)}
+
+
+def _transformer_fit_kwargs_check(source: str) -> list[tuple[str, str]]:
+    """`fit_kwargs=` on a TRANSFORMER is silently dropped.
+
+    skrub applies a transformer by calling ``fit_transform(X, y)``, and
+    ``TransformerMixin.fit_transform`` forwards only ``X`` and ``y`` to ``fit``.
+    A ``fit_kwargs`` entry therefore never reaches the estimator: the argument
+    arrives as ``None`` and the plan dies at SCORING time with an
+    ``AttributeError`` on ``None``, long after it built cleanly. stratum says so
+    out loud at runtime ("`fit_kwargs` is ignored for a transformer"); skrub just
+    drops it. ``fit_kwargs`` belongs to the final predictor only.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    transformers = _local_transformer_names(tree)
+    out: list[tuple[str, str]] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "apply" and node.args):
+            continue
+        est = node.args[0]
+        name = (est.func.id if isinstance(est, ast.Call) and isinstance(est.func, ast.Name)
+                else est.id if isinstance(est, ast.Name) else None)
+        if name not in transformers:
+            continue
+        keys = {kw.arg for kw in node.keywords}
+        if "fit_kwargs" in keys and "fit_transform_kwargs" not in keys:
+            out.append((ERROR, f"line {node.lineno}: fit_kwargs= on {name}, which is a "
+                        "TRANSFORMER -- skrub fits it through fit_transform(X, y), so "
+                        "the entry is silently dropped and the argument arrives as None. "
+                        "Use fit_transform_kwargs= (plus transform_kwargs= if transform "
+                        "needs it too); fit_kwargs= is for the final predictor only."))
+    return out
+
+
+def _sparse_densify_check(source: str) -> list[tuple[str, str]]:
+    """`np.asarray()` does not densify a scipy sparse matrix.
+
+    ``np.asarray(csr)`` returns a 0-d OBJECT array wrapping the matrix, not a
+    dense 2-D one, so the next arithmetic fails with ``TypeError: float()
+    argument must be a string or a real number, not 'csr_matrix'`` several lines
+    from the cause. ``csr @ csr`` is sparse, so a sparse product needs
+    ``.toarray()``.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    sparse_ctors = {"csr_matrix", "csc_matrix", "coo_matrix", "csr_array", "csc_array"}
+    sparse_names = {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign)
+                    for t in n.targets if isinstance(t, ast.Name)
+                    if any(isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+                           and c.func.id in sparse_ctors for c in ast.walk(n.value))}
+
+    def is_sparse(node) -> bool:
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            return node.func.id in sparse_ctors
+        if isinstance(node, ast.Name):
+            return node.id in sparse_names
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.MatMult):
+            return is_sparse(node.left) or is_sparse(node.right)
+        return False
+
+    out: list[tuple[str, str]] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "asarray" and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in ("np", "numpy") and node.args):
+            continue
+        if is_sparse(node.args[0]):
+            out.append((ERROR, f"line {node.lineno}: np.asarray() of a scipy sparse "
+                        "matrix does NOT densify it -- it wraps it in a 0-d object "
+                        "array, and the next arithmetic raises `TypeError: float() "
+                        "argument must be ... not 'csr_matrix'`. Use .toarray()."))
+    return out
+
+
 # Calls that RUN the cross-validation. Anything here executes on import unless it
 # sits under the __main__ guard.
 SCORING_CALLS = ("make_grid_search", "make_randomized_search", "cross_validate")
@@ -890,6 +975,8 @@ def _arg_checks(source: str) -> list[tuple[str, str]]:
     out += _gratuitous_wrapper_check(source)
     out += _kwarg_obfuscation_check(source)
     out += _dead_identity_check(source)
+    out += _transformer_fit_kwargs_check(source)
+    out += _sparse_densify_check(source)
 
     for lineno, args in _calls(source, ".skb.concat"):
         if args.strip() and not args.lstrip().startswith("["):
@@ -925,7 +1012,60 @@ def strip_noncode(source: str) -> str:
     return "".join(lines)
 
 
+
+def _stratum_checks(source: str) -> list[tuple[str, str]]:
+    """Contract items that only apply when the target engine is stratum.
+
+    Both failures are silent rather than loud, which is why they are checked:
+    a search outside ``config(scheduler=True)`` quietly falls back to the slow
+    evaluator (the whole reason for choosing stratum), and reading
+    ``mean_test_score`` off a polars frame raises only once the run has already
+    finished and the score has been computed.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    out: list[tuple[str, str]] = []
+
+    scheduler_lines: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.With):
+            continue
+        for item in node.items:
+            call = item.context_expr
+            if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                    and call.func.attr == "config"
+                    and any(kw.arg == "scheduler" for kw in call.keywords)):
+                for stmt in node.body:
+                    scheduler_lines.update(
+                        n.lineno for n in ast.walk(stmt) if hasattr(n, "lineno"))
+
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "make_grid_search"
+                and node.lineno not in scheduler_lines):
+            out.append((ERROR, f"line {node.lineno}: make_grid_search() outside "
+                        "`with skrub.config(scheduler=True):` -- on stratum that "
+                        "silently uses the slow evaluator, which is the one thing "
+                        "choosing stratum was meant to avoid."))
+
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant)
+                and node.slice.value == "mean_test_score"):
+            out.append((ERROR, f"line {node.lineno}: results_[\"mean_test_score\"] is "
+                        "the pandas shape. stratum returns a POLARS frame with columns "
+                        "`id` and `scores`, sorted best-first: use results_[\"scores\"] "
+                        "and results_[\"scores\"][0]."))
+
+    if not re.search(r"^\s*import\s+stratum\s+as\s+skrub\b", source, re.MULTILINE):
+        out.append((ERROR, "the engine is stratum: import it as "
+                    "`import stratum as skrub`, so the rest of the plan is unchanged."))
+    return out
+
+
 def run_checks(source: str, *, strict: bool = False,
+               engine: str = "skrub",
                original: str | None = None) -> CheckReport:
     source = strip_noncode(source)
     toplevel = mask_functions(source)
@@ -954,7 +1094,8 @@ def run_checks(source: str, *, strict: bool = False,
             outside = mask_sanctioned_split(outside)
             for msg in rule.check(outside):
                 warnings.append(msg)
-    for level, msg in _arg_checks(source):
+    engine_checks = _stratum_checks(source) if engine == "stratum" else []
+    for level, msg in list(_arg_checks(source)) + engine_checks:
         (errors if level == ERROR or strict else warnings).append(msg)
     for level, msg in _dropped_early_stopping_check(source, original):
         (errors if level == ERROR or strict else warnings).append(msg)

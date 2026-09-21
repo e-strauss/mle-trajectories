@@ -41,6 +41,43 @@ that writes to the sibling `<run>/skrubify/` mirroring its sub-path, so
 `pipelines/ensemble/e0.py` -> `skrubify/ensemble/e0.py`. `-o` takes a file
 (single source) or a directory.
 
+## Target engine
+
+`--engine {skrub,stratum}`, default `skrub`. Nothing changes unless you ask for
+stratum, which is a drop-in with the same `.skb` API but a different evaluator:
+skrub 0.8's is exponential in graph size, so a fine-grained plan of a few
+hundred nodes is effectively unrunnable there (measured on one converted
+pipeline: 409 s just to evaluate `X`, against 2 s under stratum's scheduler; a
+full scoring run never finished in 3 hours).
+
+```bash
+python -m skrubify ../ttt-task/mlevolve_run_2/pipelines/0029_*.py \
+    --engine stratum --provider openai --model gpt-5.6-sol
+```
+
+Selecting it changes three things in the emitted file, and adds a check for
+each, because all three fail silently otherwise:
+
+| | skrub | stratum |
+|---|---|---|
+| import | `import skrub` | `import stratum as skrub` |
+| scoring | `pred.skb.make_grid_search(...)` | the same, inside `with skrub.config(scheduler=True):` |
+| `results_` | pandas, `mean_test_score` | polars, `id` / `scores`, sorted best-first |
+
+A `make_grid_search` outside the scheduler context quietly falls back to the
+slow evaluator — the one thing choosing stratum was meant to avoid — and
+`results_["mean_test_score"]` on a polars frame raises only after the run has
+already finished.
+
+One extra constraint the prompt carries in stratum mode: the scheduler hands
+frames to polars, which cannot carry an **object-dtype** column, so
+`Series.str.split(sep)` (a column of Python lists) has to become anchored
+`str.extract`.
+
+Because `--engine stratum` makes a converted plan runnable in seconds rather
+than hours, it is what makes `--run-in` / `--compare-source` usable as part of
+the repair loop rather than a separate manual step.
+
 ## Install
 
 `litellm` is a normal project dependency, so `uv sync` is all it takes. It is
@@ -171,8 +208,12 @@ would have stopped this before it was written?" before reaching for a rule.
 5. **Repair** (`core.py`) — on failure the candidate plus the validator's report
    (static errors, the real traceback, structural problems) go back to the model,
    up to `--max-repairs` rounds (default 2). Exit code is non-zero if the final
-   candidate still fails; `--json-report` records every attempt and
-   `--keep-attempts` writes each one to `<stem>.attemptN.py`.
+   candidate still fails; `--json-report` records every attempt.
+   Attempts are held in MEMORY and written to `<stem>.attemptN.py` only when
+   the conversion never converged -- on success they are just the defects the
+   repair rounds removed, and the final file is the deliverable.
+   `--keep-attempts` writes them regardless, for studying what a repair
+   changed. The last attempt is never written: it is the output file.
 
 ## Verified against real data
 

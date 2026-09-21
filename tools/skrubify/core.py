@@ -18,6 +18,9 @@ class SkrubifyConfig:
     examples_dir: Path | None = None
     n_examples: int | None = None
     extra_instructions: str | None = None
+    engine: str = "skrub"   # 'skrub' | 'stratum' (see prompt.ENGINE_NOTES)
+    run_in: Path | None = None    # execute each candidate here; failures drive repairs
+    run_timeout: int = 1800
     max_repairs: int = 2
     validate_build: bool = True
     strict: bool = False
@@ -89,7 +92,7 @@ def build_messages(source: Path, cfg: SkrubifyConfig) -> list[dict]:
     user = P.build_user_prompt(Path(source).read_text(), source_name=Path(source).name,
                                guide=guide, examples=examples,
                                extra_instructions=cfg.extra_instructions)
-    return [{"role": "system", "content": P.SYSTEM},
+    return [{"role": "system", "content": P.system_prompt(cfg.engine)},
             {"role": "user", "content": user}]
 
 
@@ -114,20 +117,20 @@ def skrubify_file(source: Path, out_path: Path | None = None, *,
         t0 = time.monotonic()
         code = P.extract_code(cfg.llm.complete(messages))
         out_path.write_text(code)
-        if cfg.keep_attempts:
-            out_path.with_suffix(f".attempt{i}.py").write_text(code)
-        v = validate(out_path, python=cfg.python, strict=cfg.strict,
+        v = validate(out_path, python=cfg.python, strict=cfg.strict, engine=cfg.engine,
                      build=cfg.validate_build, timeout=cfg.timeout,
-                     original=source)
+                     original=source,
+                     run_in=cfg.run_in, run_timeout=cfg.run_timeout)
         if v.build_timed_out and v.checks.ok:
             # Out of clock, not out of correctness: give a big plan more time
             # rather than spending a repair round telling the model to fix a
             # stopwatch (measured: 0020 burned 3 attempts that way).
             _log(cfg, f"    build timed out after {cfg.timeout}s -- retrying "
                       f"with {cfg.timeout * 3}s")
-            v = validate(out_path, python=cfg.python, strict=cfg.strict,
+            v = validate(out_path, python=cfg.python, strict=cfg.strict, engine=cfg.engine,
                          build=cfg.validate_build, timeout=cfg.timeout * 3,
-                         original=source)
+                         original=source,
+                         run_in=cfg.run_in, run_timeout=cfg.run_timeout)
         attempt = Attempt(index=i, code=code, validation=v,
                           seconds=time.monotonic() - t0)
         result.attempts.append(attempt)
@@ -141,8 +144,35 @@ def skrubify_file(source: Path, out_path: Path | None = None, *,
         messages += [{"role": "assistant", "content": f"```python\n{code}```"},
                      {"role": "user", "content": P.build_repair_prompt(v.feedback())}]
 
+    for path in write_attempts(result, out_path, keep=cfg.keep_attempts):
+        _log(cfg, f"    kept {path.name}")
     result.stats = cfg.llm.stats()
     return result
+
+
+def write_attempts(result: Result, out_path: Path, *, keep: bool = False) -> list[Path]:
+    """Persist the superseded attempts -- only when they are worth keeping.
+
+    Every attempt is already held in memory on ``result``; the loop no longer
+    writes them as it goes. On a conversion that converged they are pure litter:
+    the final file IS the deliverable, and the intermediates differ from it only
+    by the defects the repair rounds removed. They become evidence when the
+    conversion never converged, so that is the default.
+
+    ``keep=True`` (``--keep-attempts``) writes them regardless, which is what you
+    want when studying what a repair round actually changed.
+
+    The last attempt is never written: it is byte-identical to ``out_path``.
+    """
+    superseded = result.attempts[:-1]
+    if not superseded or (result.ok and not keep):
+        return []
+    written = []
+    for attempt in superseded:
+        path = out_path.with_suffix(f".attempt{attempt.index}.py")
+        path.write_text(attempt.code)
+        written.append(path)
+    return written
 
 
 def _log(cfg: SkrubifyConfig, msg: str) -> None:

@@ -30,6 +30,10 @@ class Validation:
     build_error: str | None = None
     info: dict = field(default_factory=dict)   # n_nodes / has_X / has_y / cv / …
     missing_module: str | None = None     # dependency gap, NOT a bug in the candidate
+    run_ok: bool | None = None            # None => the pipeline was never executed
+    run_error: str | None = None
+    run_score: float | None = None
+    run_detail: str | None = None   # stdout tail of a successful run
 
     @property
     def build_timed_out(self) -> bool:
@@ -44,7 +48,8 @@ class Validation:
 
     @property
     def ok(self) -> bool:
-        return self.checks.ok and self.build_ok is not False and not self.structural
+        return (self.checks.ok and self.build_ok is not False
+                and not self.structural and self.run_ok is not False)
 
     @property
     def structural(self) -> list[str]:
@@ -74,6 +79,19 @@ class Validation:
         if self.structural:
             parts.append("The plan builds but its graph is wrong:\n" +
                          "\n".join(f"- {m}" for m in self.structural))
+        if self.run_ok is False and self.run_error:
+            # The only failures visible here are SCORING-time ones: the graph is
+            # well-formed and every static rule passed, and the plan still died
+            # once data flowed. Hand back the raw traceback -- the useful part is
+            # the frame inside the candidate's own code.
+            parts.append("The plan builds but FAILS WHEN RUN on real data. This is "
+                         "not a contract problem -- the graph is fine and the static "
+                         "checks pass. Something in your own code breaks once rows "
+                         "flow through it (a column that is never created, an index "
+                         "built against the wrong frame, a value that is not the "
+                         "type the next call expects). Read the traceback, find the "
+                         "line in YOUR code, and fix the logic:\n```\n"
+                         f"{self.run_error}\n```")
         if self.checks.warnings:
             parts.append("Warnings (fix if they are real, ignore if intentional):\n" +
                          "\n".join(f"- {m}" for m in self.checks.warnings))
@@ -97,6 +115,10 @@ class Validation:
                 bits.append(f"grid: {grid.splitlines()[0]}…")
         else:
             bits.append("plan build FAILED")
+        if self.run_ok is True:
+            bits.append(f"runs (score={self.run_score!r})")
+        elif self.run_ok is False:
+            bits.append("RUN FAILED")
         bits.append(f"{len(self.checks.errors)} check error(s), "
                     f"{len(self.checks.warnings)} warning(s)")
         return " · ".join(bits)
@@ -123,15 +145,21 @@ def build_plan(path: Path, python: str | None = None, timeout: int = 300) -> tup
 
 
 def validate(path: Path, *, python: str | None = None, strict: bool = False,
+             engine: str = "skrub",
              build: bool = True, timeout: int = 300,
-             original: str | Path | None = None) -> Validation:
+             original: str | Path | None = None,
+             run_in: Path | None = None, run_timeout: int = 1800) -> Validation:
     """``original`` is the script being converted. A few defects are only
     visible by comparison -- deleted early stopping above all -- so pass it
-    whenever it is known; without it those checks simply do not fire."""
+    whenever it is known; without it those checks simply do not fire.
+
+    ``run_in`` executes the candidate in that directory once the cheap layers
+    agree; a failure there is a defect like any other, and its traceback becomes
+    repair feedback. It is the only layer that sees scoring-time bugs."""
     source = Path(path).read_text()
     if isinstance(original, Path):
         original = original.read_text() if original.is_file() else None
-    checks = run_checks(source, strict=strict, original=original)
+    checks = run_checks(source, strict=strict, engine=engine, original=original)
     if not build:
         return Validation(checks=checks)
     ok, error, info = build_plan(Path(path), python=python, timeout=timeout)
@@ -144,8 +172,17 @@ def validate(path: Path, *, python: str | None = None, strict: bool = False,
         m = MISSING_MODULE.search(error)
         if m and m.group(1).split(".")[0] not in ("skrub", "pandas", "numpy", "sklearn"):
             missing, ok = m.group(1), None
-    return Validation(checks=checks, build_ok=ok, build_error=error, info=info,
-                      missing_module=missing)
+    result = Validation(checks=checks, build_ok=ok, build_error=error, info=info,
+                        missing_module=missing)
+    # Only worth running once the cheap layers agree: a run costs real time, and
+    # a candidate that already fails a check would just fail more slowly.
+    if run_in is not None and result.ok and ok:
+        run_ok, score, detail = run_pipeline(Path(path), Path(run_in),
+                                             python=python, timeout=run_timeout)
+        result.run_ok, result.run_score = run_ok, score
+        result.run_error = None if run_ok else detail
+        result.run_detail = detail if run_ok else None
+    return result
 
 
 # Every pattern is applied and the matches pooled: a script may print its

@@ -48,6 +48,10 @@ def _add_args(ap: argparse.ArgumentParser) -> None:
                         ".skrubify.env in cwd upwards to the repo root, then the package)")
 
     g = ap.add_argument_group("prompt")
+    g.add_argument("--engine", default="skrub", choices=("skrub", "stratum"),
+                   help="target engine (default: skrub). 'stratum' is a drop-in with "
+                        "the same .skb API but a non-exponential evaluator; selecting "
+                        "it adapts the prompt and the checks.")
     g.add_argument("--guide", type=Path, default=None,
                    help="skrub guide markdown (default: tools/skrub_dataops_summary.md)")
     g.add_argument("--examples-dir", type=Path, default=None,
@@ -68,7 +72,10 @@ def _add_args(ap: argparse.ArgumentParser) -> None:
     g.add_argument("--python", default=None,
                    help="interpreter used to build the plan (default: this one)")
     g.add_argument("--keep-attempts", action="store_true",
-                   help="also write each attempt to <stem>.attemptN.py")
+                   help="always write superseded attempts to <stem>.attemptN.py. "
+                        "By default they are kept in memory and only written when "
+                        "the conversion never converged, since on success they are "
+                        "just the defects the repair rounds removed.")
     g.add_argument("--build-timeout", type=int, default=300,
                    help="seconds allowed for one plan build (default 300; a timeout is retried at 3x before counting as a failure)")
 
@@ -108,11 +115,19 @@ def _headline_delta(score: float | None, score_s: float | None, n_new: int) -> N
     print(f"  vs original final: {compare_scores([score], [score_s])}")
 
 
-def _run_and_compare(pipeline: Path, source: Path | None, args) -> int:
-    """Execute the pipeline (and optionally the original) and report the scores."""
-    print(f"  running {pipeline.name} in {args.run_in} …", file=sys.stderr, flush=True)
-    ok, score, detail = run_pipeline(pipeline, args.run_in, python=args.python,
-                                     timeout=args.run_timeout)
+def _run_and_compare(pipeline: Path, source: Path | None, args,
+                     known: tuple[float | None, str] | None = None) -> int:
+    """Execute the pipeline (and optionally the original) and report the scores.
+
+    ``known`` carries the (score, stdout) of a run the repair loop already did,
+    so a conversion is not executed twice just to compare it against the original.
+    """
+    if known is not None:
+        ok, (score, detail) = True, known
+    else:
+        print(f"  running {pipeline.name} in {args.run_in} …", file=sys.stderr, flush=True)
+        ok, score, detail = run_pipeline(pipeline, args.run_in, python=args.python,
+                                         timeout=args.run_timeout)
     if not ok:
         print(f"  RUN FAILED: {detail}")
         return 1
@@ -181,8 +196,9 @@ def _check(paths: list[Path], args) -> int:
     rc = 0
     for path in paths:
         v = validate(path, python=args.python, strict=args.strict,
-                     build=not args.no_validate, timeout=args.build_timeout,
-                     original=_find_source(path))
+                     engine=args.engine, build=not args.no_validate,
+                     timeout=args.build_timeout, original=_find_source(path),
+                     run_in=args.run_in, run_timeout=args.run_timeout)
         flag = "OK  " if v.ok else "FAIL"
         print(f"{flag} {path}: {v.summary()}")
         text = v.feedback()
@@ -192,7 +208,9 @@ def _check(paths: list[Path], args) -> int:
             src = _find_source(path) if args.compare_source else None
             if args.compare_source and src is None:
                 print(f"     ! no original found for {path.name}; running alone")
-            rc |= _run_and_compare(path, src, args)
+            known = ((v.run_score, v.run_detail)
+                     if v.run_ok and v.run_detail else None)
+            rc |= _run_and_compare(path, src, args, known=known)
         rc |= 0 if v.ok else 1
     return rc
 
@@ -229,6 +247,7 @@ def main(argv=None) -> int:
     cfg = SkrubifyConfig(
         guide_path=args.guide, examples_dir=args.examples_dir,
         n_examples=args.n_examples, extra_instructions=instructions,
+        engine=args.engine, run_in=args.run_in, run_timeout=args.run_timeout,
         max_repairs=args.max_repairs, validate_build=not args.no_validate,
         strict=args.strict, python=args.python, timeout=args.build_timeout,
         keep_attempts=args.keep_attempts, verbose=not args.quiet,
@@ -279,7 +298,11 @@ def main(argv=None) -> int:
         print(f"{status}: {out}  ({len(res.attempts)} attempt(s))")
         rc |= 0 if res.ok else 1
         if args.run_in and res.ok:
-            rc |= _run_and_compare(out, src, args)
+            # the repair loop already ran this candidate; reuse its result
+            final = res.final.validation if res.final else None
+            known = ((final.run_score, final.run_detail) if final
+                     and final.run_ok and final.run_detail else None)
+            rc |= _run_and_compare(out, src, args, known=known)
 
     if not args.quiet:
         s = llm.stats()

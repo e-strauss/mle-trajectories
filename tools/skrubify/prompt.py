@@ -21,6 +21,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+ENGINES = ("skrub", "stratum")
+
 PKG = Path(__file__).parent
 EXAMPLES_DIR = PKG / "examples"
 DEFAULT_GUIDE = PKG.parent / "skrub_dataops_summary.md"
@@ -173,6 +175,42 @@ Your job is a FAITHFUL TRANSLATION, not a redesign:
   Mention it in a comment. Row filtering / row dropping is the exception: it must
   happen BEFORE the marks, since it changes the number of rows.
 
+# Where each computation belongs
+
+Decide every block of the original by ONE question: does it need something
+learned from the fold's training rows?
+
+* NO -> it is recorded DataOps. Write it as fine-grained recorded operations,
+  one node per feature. A `TransformerMixin` whose `fit` is `return self` is a
+  UDF in disguise -- it hides N operations behind one opaque node -- so write it
+  as recorded ops instead.
+* YES -> it gets its OWN small estimator. Do not fuse several stateful steps
+  into one wrapper, and never let stateless work ride along inside one.
+  Independent aggregations get separate estimators, so each is its own node.
+
+This is not cosmetic: the plan's per-operator statistics are how a pipeline is
+profiled, and work hidden inside one big estimator is a single opaque entry. A
+400-line estimator tells you nothing about where the time went.
+
+Three consequences, to apply literally:
+
+1. A statistic consumed ONLY while fitting (weight initialisation, class priors,
+   a co-occurrence matrix used to seed a layer) needs no state at all. Compute it
+   as a recorded DataOp downstream of `y` and hand it to the estimator with
+   `fit_kwargs={"name": that_node}` -- `fit_kwargs` values may be DataOps and are
+   evaluated per fold on that fold's training rows.
+2. An `is_training` / `is_train_rows` flag that switches between a leave-one-out
+   and a plain computation IS the `fit_transform` / `transform` split. Implement
+   it by overriding BOTH methods on a transformer applied with
+   `.skb.apply(t, y=y)`: `fit_transform(X, y)` sees the training rows and takes
+   the leave-one-out branch, `transform(X)` sees the scored rows and takes the
+   plain one. Do not use `skrub.eval_mode()` branching or `freeze_after_fit`.
+3. Assembling the design matrix -- `np.hstack` / `np.column_stack` of feature
+   blocks followed by `np.nan_to_num` -- is not modelling. Have each block leave
+   its producer as NAMED COLUMNS, then assemble with a recorded column selection
+   `X[FEATURE_COLS]` plus `.replace([np.inf, -np.inf], 0.0).fillna(0.0)`, so the
+   estimator receives a ready numeric frame and contains only the model.
+
 # Output contract (exactly this shape)
 
 ```python
@@ -270,6 +308,9 @@ Hard requirements:
    (guide pitfall 20). If every column the block touches is a literal name
    visible in the source, nothing was discovered and this exception does not
    apply: write the recorded ops.
+   Before reaching for that exception, try an explicit final `X[COLS]`
+   selection: it reproduces any column ORDER without a class, and a STATELESS
+   transformer is a UDF in disguise (see "Where each computation belongs").
 7. Data-dependent constants that the original computed at runtime (e.g.
    `num_class=len(y.unique())`) must become concrete literals, since the
    estimator is constructed once while the plan is built. Infer the value from
@@ -281,10 +322,107 @@ Hard requirements:
    an early-stopping eval set carved out of the fold's training rows because the
    original's was the scored split). A comment explains a deviation the contract
    allows; it does not license one it forbids.
+10. `fit_kwargs=` is for the final PREDICTOR only. skrub applies a TRANSFORMER by
+   calling `fit_transform(X, y)`, and `TransformerMixin.fit_transform` forwards
+   only `X` and `y` to `fit`, so a `fit_kwargs` entry on a transformer is
+   SILENTLY DROPPED: the argument arrives as `None` and the plan dies at scoring
+   time with an `AttributeError`, long after it built cleanly. Use
+   `fit_transform_kwargs={...}` (plus `transform_kwargs={...}` when `transform`
+   needs the table too), and make the signatures accept the keyword.
+11. A long `(key, category)` table scattered into a dense 0/1 matrix is a
+   RESHAPE, not a scatter: `drop_duplicates().assign(present=np.uint8(1))
+   .set_index([key, category])[...].unstack(fill_value=np.uint8(0))
+   .reindex(index=keys, columns=range(N), fill_value=np.uint8(0))`. Never
+   `m = np.zeros(...); m[rows, cols] = 1` in a UDF -- that is an in-place write,
+   which a plan cannot record at all, and `unstack` stays uint8 end to end.
+12. A per-row Python function over a column -- `series.map(parse)`, `.apply(f)`,
+   a list comprehension -- is a UDF, and "pandas has no parser for this" is not a
+   reason to keep one. Index labels out of a delimited string with anchored
+   regex (`col.str.extract(r"([^.]*)$")` for the last field,
+   `r"([^.]*)\\.[^.]*$"` for the one before it) and turn the original's `if`
+   chain into `.where(cond, other)` links applied in the same order. Prefer this
+   to `.str.split(sep)`: a list column is object dtype, which some executors
+   cannot carry.
+13. Arithmetic on a small fixed-size matrix is recordable: `np.diag(m)` ->
+   `m.skb.apply_func(np.diag)`, `np.fill_diagonal(m, 0.0)` ->
+   `m.where(~np.eye(K, dtype=bool), 0.0)`, `m / v[:, None]` -> `m.div(v, axis=0)`.
+   The in-place ones are the reason to reformulate, not performance.
+14. A MERGE must never change the row count. The original's lookups are dicts
+   (`dict(zip(keys, values))` keeps ONE value per key), while a right-hand table
+   with repeated keys fans out and ADDS rows -- after which the design matrix no
+   longer lines up with `y`, and the damage surfaces far away as an out-of-bounds
+   index or a quietly wrong score. De-duplicate every lookup table on its join key
+   first (`.drop_duplicates(subset=key, keep="last")`) and join with `how="left"`.
+15. Densify a sparse result with `.toarray()`. `csr @ csr` is sparse, and
+   `np.asarray()` does NOT densify it -- it wraps it in a 0-d object array, and
+   the next arithmetic raises `TypeError: float() argument must be ... not
+   'csr_matrix'` several lines from the cause.
+16. An `os.path.exists(path)` guard around one of the task's documented input
+   files is a property of the environment, not of the data: read the file
+   directly and say in a comment that the guard was dropped. (This is NOT an
+   exception to the no-op rule, which is about logic depending on the data's
+   CONTENTS.) And `.skb.with_scoring(...)` does not exist in the pinned skrub
+   version -- a custom metric is a `make_scorer(...)` passed to
+   `make_grid_search(scoring=...)`.
 
 Reply with ONE ```python fenced code block containing the complete file, and
 nothing else -- no prose before or after.\
 """
+
+
+ENGINE_NOTES = {
+    "skrub": "",
+    "stratum": """\
+
+# Engine: stratum
+
+Target **stratum**, not skrub. stratum is a drop-in whose `.skb` API is
+identical; the difference is the execution engine, and skrub 0.8's evaluator
+scales exponentially in graph size, so a fine-grained plan of a few hundred
+nodes is unrunnable there (measured: 409 s just to evaluate X, against 2 s under
+stratum's scheduler). Three things change, and nothing else:
+
+1. Import it under the name `skrub`, so every other rule in this prompt reads
+   unchanged:
+
+   ```python
+   import stratum as skrub   # drop-in for skrub: same .skb API, faster evaluator
+   ```
+
+2. Run the search under the scheduler -- without this you get the slow path
+   silently:
+
+   ```python
+   with skrub.config(scheduler=True):
+       search = pred.skb.make_grid_search(
+           n_jobs=1, fitted=True, refit=False, scoring=<scorer>)
+   ```
+
+3. `search.results_` is a **polars** frame with columns `id` and `scores`,
+   already sorted best-first -- NOT pandas with `mean_test_score`:
+
+   ```python
+   results = search.results_
+   print(results)
+   for variant_score in results["scores"]:
+       print(f"Variant score: {variant_score}")
+   print(f"Final Validation Performance: {results['scores'][0]}")
+   ```
+
+One extra constraint: the scheduler hands frames to polars, which cannot carry
+an **object-dtype** column. Anything that would produce one has to be
+reformulated -- in particular `Series.str.split(sep)` yields a column of Python
+lists, so index labels out of a delimited string with anchored `str.extract`
+instead (see the regex recipe above).
+""",
+}
+
+
+def system_prompt(engine: str = "skrub") -> str:
+    """The output contract, with the engine-specific addendum appended."""
+    if engine not in ENGINES:
+        raise ValueError(f"unknown engine {engine!r}; pick one of {ENGINES}")
+    return SYSTEM + ENGINE_NOTES[engine]
 
 REPAIR_HEADER = """\
 The file you produced was rejected by the validator. It was written to disk and
