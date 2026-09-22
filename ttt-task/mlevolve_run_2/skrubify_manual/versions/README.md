@@ -63,12 +63,17 @@ Every version is checked two ways, and all four pass identically:
 The score check is not redundant: v3 moves a matrix that only initialises the
 relational layer's weights, which the design-matrix check cannot see.
 
-Reproduce with the sample in `ttt-task/input/`:
+Reproduce with the 20k-domain sample, which now lives in
+`ttt-task/sample/input/` (`ttt-task/input/` holds the full data). `TTT_INPUT` is
+read relative to the working directory, so run from the sample's run-root:
 
 ```bash
-TTT_INPUT=./input python versions/v2_direct_links.py
-TTT_INPUT=./input TTT_EPOCHS=4 python versions/v3_cooccurrence.py   # fast loop
+cd ttt-task/sample
+TTT_INPUT=./input python ../mlevolve_run_2/skrubify_manual/versions/v2_direct_links.py
+TTT_INPUT=./input TTT_EPOCHS=4 python ../mlevolve_run_2/skrubify_manual/versions/v3_cooccurrence.py   # fast loop
 ```
+
+Rebuild the sample itself with `python ttt-task/make_input_sample.py`.
 
 ## Note on provenance
 

@@ -59,9 +59,11 @@ from sklearn.model_selection import BaseCrossValidator
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
-# The full task data. Set TTT_INPUT=./input to run against the small sample in
-# ttt-task/input/ instead (that is what the bit-identity check against the
-# original's design matrix was run on).
+# The full task data. Set TTT_INPUT=./input with cwd=ttt-task/sample to run
+# against the 20k-domain sample instead (that is what the bit-identity check
+# against the original's design matrix was run on). ttt-task/input/ now holds
+# the FULL data, and each sample is its own run-root: ttt-task/sample/input/,
+# ttt-task/sample_200k/input/, ...
 # The original trained 12 epochs. Set TTT_EPOCHS=4 for a quick loop on the sample.
 NUM_EPOCHS = int(os.environ.get("TTT_EPOCHS", "12"))
 INPUT_DIR = os.environ.get(

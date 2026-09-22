@@ -220,6 +220,24 @@ the report says so where it shows.
 Turning tracking on backfills a store measured without it: an entry with no
 memory series is not considered fresh, so no `--force` is needed.
 
+**An upgraded stratum invalidates a store.** The logical optimizer decides the
+DAG, so a new stratum build changes both the op mix a pipeline is credited with
+and how long it takes — on one run the same 68 pipelines came out as 769
+`NumericOp` against 782, and 468 `CallOp` against 419. `stratum.__version__`
+cannot see this: it is a static `0.0.0.dev2` across builds, so the store records
+the installed *commit* (from the wheel's `direct_url.json`) per entry and an entry
+from a different commit is re-measured. A store from before the commit was
+recorded has none, and is stale as soon as the executor has one. The sweep says
+which build it found:
+
+```
+! store was measured under stratum 834dc0298037, this interpreter has
+  8b7f7ba3c632 -- those entries are stale and will be re-measured
+```
+
+`--list` applies the same rule, so it is the cheap way to see whether an upgrade
+orphaned a store before starting a sweep that may take hours.
+
 Options:
 - `--run-in DIR`     working directory for the pipelines (default: nearest
   ancestor of `--pipelines` holding `input/`)
@@ -235,9 +253,12 @@ Options:
 - `--out FILE`       store path
 
 **The store is a cache.** A pipeline already measured with the same code
-(`code_sha1`) and the same sample size is skipped, and the store is rewritten
-after every pipeline, so a sweep can be interrupted and resumed, or filled in
-one pipeline at a time.
+(`code_sha1`), the same sample size and the same stratum commit is skipped, and
+the store is rewritten after every pipeline, so a sweep can be interrupted and
+resumed, or filled in one pipeline at a time. The commit is kept per entry
+rather than only per store, because an interrupted sweep across an upgrade
+leaves entries from two builds and each has to be judged on the one that
+produced it.
 
 ### What the runner does and does not touch
 

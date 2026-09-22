@@ -24,8 +24,8 @@ from dataclasses import dataclass, field
 
 from sklearn.base import BaseEstimator
 
-from stratum.optimizer.ir._base import OperandRef
-from stratum.optimizer.ir._ops import BaseEstimatorOp, ChoiceOp
+from stratum.optimizer.logical._base import OperandRef
+from stratum.optimizer.logical._ops import BaseEstimatorOp, ChoiceOp
 from stratum.optimizer._op_utils import topological_iterator
 
 

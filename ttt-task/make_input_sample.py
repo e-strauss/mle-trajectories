@@ -1,7 +1,16 @@
 """Build a small, self-consistent sample of the trackthetrackers input folder.
 
-Writes ttt-task/input/ (gitignored) from the full task data, so a skrubified
-pipeline and its original can be run side by side in ~1 minute instead of hours.
+Writes ttt-task/sample/input/ (gitignored) from the full task data in
+ttt-task/input/, so a skrubified pipeline and its original can be run side by
+side in ~1 minute instead of hours:
+
+    python -m skrubify <run>/pipelines/x.py --run-in ttt-task/sample
+
+TTT_OUT builds a different size into its own run-root, which is how
+sample_200k/ sample_1m/ sample_5m/ were made:
+
+    TTT_N_SEED=200000 TTT_N_DOMAINS=200000 TTT_N_TARGET=5000 \
+        TTT_OUT=ttt-task/sample_200k/input python ttt-task/make_input_sample.py
 
 Random domain sampling would destroy the link graph (623M edges over 46M nodes:
 two random domains are almost never connected), so the sample is a NEIGHBOURHOOD:
@@ -17,8 +26,12 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-SRC = Path(os.environ.get("TTT_SRC", "/home/estrauss-ldap/repos/mle-star/machine_learning_engineering/tasks/trackthetrackers-task"))
-OUT = Path(os.environ.get("TTT_OUT", Path(__file__).resolve().parent / "input"))
+HERE = Path(__file__).resolve().parent
+# ttt-task/input/ holds the full data (symlinks to it are fine, see DATA.md); the
+# sample is a sibling run-root so a pipeline's bare "input/..." reads resolve
+# against it unchanged with cwd=ttt-task/sample.
+SRC = Path(os.environ.get("TTT_SRC", HERE / "input"))
+OUT = Path(os.environ.get("TTT_OUT", HERE / "sample" / "input"))
 
 N_SEED = int(os.environ.get("TTT_N_SEED", 20_000))      # tracked domains to grow the neighbourhood from
 N_DOMAINS = int(os.environ.get("TTT_N_DOMAINS", 20_000))  # cap on sampled candidate (training) domains

@@ -1,0 +1,40 @@
+{
+  "dataset": "playground-series-s6e7",
+  "built": "2026-09-21T16:41:53+0200",
+  "script": "make_sample.py",
+  "strategy": "proportional stratified row sample on health_condition; test sampled independently, sample_submission filtered to the sampled test ids",
+  "source": "/home/estrauss-ldap/repos/mle-trajectories/playground-series-s6e7/input",
+  "out": "/home/estrauss-ldap/repos/mle-trajectories/playground-series-s6e7/sample/input",
+  "seed": 0,
+  "knobs": {
+    "S6E7_N_TRAIN": 10000,
+    "S6E7_N_TEST": 5000,
+    "N_SPLITS_FLOOR": 5
+  },
+  "rows": {
+    "train.csv": {
+      "src": 690088,
+      "out": 10000
+    },
+    "test.csv": {
+      "src": 295753,
+      "out": 5000
+    },
+    "sample_submission.csv": {
+      "src": 295753,
+      "out": 5000
+    }
+  },
+  "class_counts": {
+    "src": {
+      "at-risk": 592561,
+      "unhealthy": 57724,
+      "fit": 39803
+    },
+    "out": {
+      "at-risk": 8587,
+      "unhealthy": 836,
+      "fit": 577
+    }
+  }
+}

@@ -8,6 +8,7 @@ dependencies = [
     "catboost>=1.2.10",
     "graphviz>=0.21",
     "ipykernel>=7.3.0",
+    "kaggle>=2.2.4",
     "lightgbm>=4.7.0",
     "litellm>=1.97.0",
     "psutil>=7.2.2",

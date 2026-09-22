@@ -20,3 +20,8 @@ __pycache__/
 # like the pipelines beside it, not ignored as raw data
 !**/journal_slim.json
 !**/final_state.json
+# how a sample was built IS the record of that sample: the data under
+# sample/input/ is ignored by the input/ rule above, but the recipe's own output
+# - sizes, knobs, seed, row counts before and after - is the only thing left
+# that says what the numbers were measured on
+!**/sample_manifest.json

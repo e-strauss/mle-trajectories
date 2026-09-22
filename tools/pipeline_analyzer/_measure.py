@@ -66,7 +66,7 @@ def _declared_cv(dag):
     with many shared nodes.
     """
     from skrub._data_ops._data_ops import SplitX
-    from stratum.utils._skrub_graph import build_graph
+    from stratum.frontend._skrub_graph import build_graph
 
     for node in build_graph(dag)["nodes"].values():
         impl = node._skrub_impl

@@ -1,11 +1,13 @@
 """Run a skrubified pipeline under stratum's scheduler and print op statistics.
 
-    TTT_INPUT=ttt-task/input_1m python ttt-task/profile_pipeline.py \
+    TTT_INPUT=ttt-task/sample_1m/input python ttt-task/profile_pipeline.py \
         ttt-task/mlevolve_run_2/skrubify_manual/0029_*.py
 
-TTT_INPUT selects the dataset (default: the full task data). TTT_EPOCHS shortens
-the training loop, which is the only way to see the plan's own cost at small
-sample sizes -- with 12 epochs the Predictor dominates everything else.
+TTT_INPUT selects the dataset (default: the full task data; each sample is a
+run-root, so the sizes are ttt-task/sample/input, sample_200k/input,
+sample_1m/input, sample_5m/input). TTT_EPOCHS shortens the training loop, which
+is the only way to see the plan's own cost at small sample sizes -- with 12
+epochs the Predictor dominates everything else.
 """
 import importlib.util
 import sys

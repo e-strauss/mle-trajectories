@@ -85,16 +85,27 @@ def code_sha1(path: Path) -> str:
 
 
 def is_fresh(entry: dict, path: Path, sample_rows: int | None,
-             mem_mode: str = "process") -> bool:
+             mem_mode: str = "process", stratum_commit: str | None = None) -> bool:
     """Whether a stored measurement still describes this file and this sweep.
 
     An entry measured without memory sampling is stale for a sweep that wants it
     (and vice versa), so turning tracking on backfills the store instead of
     needing ``--force``.
+
+    ``stratum_commit`` makes a measurement stale when the executor's stratum
+    build changed, because the numbers are not comparable across builds: the
+    logical optimizer decides the DAG, so an upgrade changes both the op mix a
+    pipeline is credited with and how long it takes. ``stratum.__version__`` is a
+    static dev string that cannot see this -- the pin moved from 834dc029 to
+    8b7f7ba3 with both reporting ``0.0.0.dev2``, which is why the commit is what
+    is compared. An entry from before the commit was recorded carries no commit,
+    so it is stale as soon as the current executor has one.
     """
     if (entry.get("status") != "ok"
             or entry.get("code_sha1") != code_sha1(path)
             or entry.get("sample_rows") != sample_rows):
+        return False
+    if stratum_commit and entry.get("stratum_commit") != stratum_commit:
         return False
     return bool(entry.get("memory")) == (mem_mode != "off")
 
@@ -305,11 +316,25 @@ def main(argv=None) -> int:
     if not pipelines:
         ap.error(f"no pipeline files in {', '.join(map(str, pipe_dirs))}")
 
+    # Before deciding what is cached: which stratum built these numbers. The
+    # stamp used to be written only at the end of a sweep and never read back,
+    # so a store measured under an older stratum was silently reused as if it
+    # were current.
+    versions = _versions(args.python) or store["meta"].get("versions", {})
+    stratum_commit = versions.get("stratum_commit")
+    stored_commit = (store["meta"].get("versions") or {}).get("stratum_commit")
+    if store["pipelines"] and stratum_commit and stored_commit != stratum_commit:
+        print(f"! store was measured under stratum "
+              f"{stored_commit[:12] if stored_commit else '(unrecorded)'}, this "
+              f"interpreter has {stratum_commit[:12]} -- those entries are stale "
+              f"and will be re-measured", file=sys.stderr)
+
     todo = []
     for name, path in pipelines:
         entry = store["pipelines"].get(name)
         if entry and not args.force:
-            if is_fresh(entry, path, args.sample_rows, args.mem_mode):
+            if is_fresh(entry, path, args.sample_rows, args.mem_mode,
+                        stratum_commit):
                 continue
             if entry.get("status") != "ok" and not args.retry_failed:
                 continue
@@ -332,7 +357,8 @@ def main(argv=None) -> int:
             entry = store["pipelines"].get(name)
             mark = ("would run" if (name, path) in todo
                     else "pending  " if entry is None or
-                         not is_fresh(entry, path, args.sample_rows, args.mem_mode)
+                         not is_fresh(entry, path, args.sample_rows,
+                                      args.mem_mode, stratum_commit)
                     else "cached   ")
             print(f"  {mark}  {name:<24} {_fmt(entry) if entry else '—'}")
         return 0
@@ -359,7 +385,7 @@ def main(argv=None) -> int:
         cv_from_plan="stratum grid_search resolves mark_as_X(cv=...)",
         mem_mode=args.mem_mode, mem_interval_s=args.mem_interval,
         mem_csv_dir=str(mem_dir.name) if mem_dir else None,
-        versions=_versions(args.python) or store["meta"].get("versions", {}),
+        versions=versions,
     )
 
     failures = 0
@@ -372,6 +398,11 @@ def main(argv=None) -> int:
                         mem_csv=(mem_dir / f"{name}.csv") if mem_dir else None)
         entry["path"] = str(path.relative_to(pipe_dirs[0].parent)
                             if path.is_relative_to(pipe_dirs[0].parent) else path)
+        # Per entry, not just per store: a sweep interrupted halfway leaves a
+        # store whose entries came from two builds, and each has to be judged on
+        # the one that produced it.
+        entry["stratum_commit"] = stratum_commit
+
         store["pipelines"][name] = entry
         save_store(store_path, store)      # after each one: a kill keeps progress
         print(_fmt(entry), file=sys.stderr)

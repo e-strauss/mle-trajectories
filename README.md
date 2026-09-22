@@ -11,11 +11,53 @@ iteration, and what it kept.
 ## Layout
 
 ```
-<dataset>/<agent>_run_<n>/
-    pipelines/        the agent's original scripts, untouched
-    final_state.json  its state dump / journal (format depends on the agent)
-    skrubify*/        the skrub DataOps rewrite of each step
+<dataset>/
+    get_data.sh       fetch the data into input/ (Kaggle datasets only)
+    DATA.md           where the data comes from, when a script cannot fetch it
+    make_sample.py    build sample/input/ from input/ (per dataset)
+    input/            the full data, gitignored
+    sample/input/     a small self-consistent sample, gitignored
+    <agent>_run_<n>/
+        pipelines/        the agent's original scripts, untouched
+        final_state.json  its state dump / journal (format depends on the agent)
+        skrubify*/        the skrub DataOps rewrite of each step
 ```
+
+## Data
+
+Pipelines read `./input/...`, and both `skrubify --run-in` and
+`pipeline_analyzer.runtime --run-in` take the directory *holding* that `input/`.
+So `--run-in <dataset>` runs against full data and `--run-in <dataset>/sample`
+against the sample, with no edit to any pipeline.
+
+Four datasets are Kaggle competitions and have a `get_data.sh` (it formalises
+what `tools/getcomp.sh` did by hand, minus the assumption that every file is a
+flat CSV):
+
+| dataset | competition |
+| --- | --- |
+| `aptos2019-blindness-detection` | `aptos2019-blindness-detection` |
+| `playground-series-s6e7` | `playground-series-s6e7` |
+| `tab_playground_dec_21` | `tabular-playground-series-dec-2021` |
+| `nyc_taxi_fare` | `new-york-city-taxi-fare-prediction` |
+
+The scripts are idempotent (re-running is a no-op unless passed `--force`) and
+need the competition rules accepted in the browser once, or the download returns
+403 rather than the data.
+
+The other four are not on Kaggle and carry a `DATA.md` instead, recording the
+upstream, the derivation needed to reach the `input/` layout, and the local path
+on this machine where one exists: `house_price` (HM Land Registry price-paid plus
+an out-of-time split), `cover_type_multi_table` (a Zenodo autofeat tar rebuilt
+into 17 tables), `ttt-task` (TrackTheTrackers), `beaver_enroll` (the BEAVER
+benchmark, not present here).
+
+Full data is the wrong size for skrubify's repair loop, which runs the candidate
+*and* the original once per round. The `dataset-sample` skill writes a
+per-dataset `make_sample.py` producing `sample/input/`; `ttt-task/make_input_sample.py`
+is the worked example. The data is gitignored, so `sample/sample_manifest.json`
+— sizes, knobs, seed, row counts before and after — is the record of what any
+sampled number was measured on.
 
 ## Corpus
 
@@ -90,3 +132,9 @@ Notes on the counts:
   per-pipeline runtime stats in a json the report picks up.
 - [`tools/trajectory.py`](tools/trajectory.py) — tabular overview of one run
   (steps, scores, timings, parents).
+- [`tools/getcomp.sh`](tools/getcomp.sh) — one-off Kaggle competition fetch into
+  `<dir>/input/`; the per-dataset `get_data.sh` scripts are the wired-up version.
+- [`.claude/skills/dataset-sample`](.claude/skills/dataset-sample) — skill: given a
+  dataset folder, write its `make_sample.py` and build `sample/input/` so a run
+  in the repair loop takes about a minute. (Claude Code only discovers skills
+  under `.claude/skills/`, which is why it does not live in `tools/`.)
