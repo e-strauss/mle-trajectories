@@ -1,0 +1,66 @@
+# TrackTheTrackers
+
+## Task
+
+This scenario is about web tracking, where third parties can see traffic on certain websites (e.g., via embedded external content such as javascript or images for visitor analytics, social media integration or ad serving). You are given data about domains and their trackers on the web, plus some additional metadata. Your task is to predict which third-party trackers each domain in `input/target.tsv` uses. For each domain, submit up to 10 candidate tracker ids — order doesn't affect scoring, but only your first 10 guesses per domain count, so submit your best 10, not more.
+
+IMPORTANT: Note that this is an end-to-end prediction task. In contrast to classical competitions like Kaggle, you are not given a dataset with features for training and prediction. Instead you are only given the targets that you need to predict for and a "pile of data" in the `input/` folder. You have to build your own training data and features from that!
+
+
+## Scoring
+
+Metric: **Recall@10** — for each domain, the fraction of its true trackers that appear anywhere in your (up to 10) predicted trackers for that domain, averaged across all domains.
+
+
+## Submission format
+
+A TSV with a header row and columns `domain_id`, `tracking_domain_id` — one row per (domain, predicted tracker) pair, up to 10 rows per `domain_id`. Extra rows beyond 10 for a domain are ignored. Domains from `target.tsv` with no predicted rows score 0 for that domain.
+
+
+## Data files (`input/`)
+
+**`tracking_graph_train.parquet`** — Known tracker presence on domains.
+- `domain_id`: the domain being tracked.
+- `tracking_domain_id`: the tracker domain doing the tracking.
+- `tracker_id`: a compact 0–354 index for the same tracker as `tracking_domain_id`.
+
+**`domains.parquet`** — hostname lookup for every domain id used anywhere in this dataset.
+- `domain`: the hostname.
+- `domain_id`: the numeric id used everywhere else to refer to this domain.
+
+**`link-graph.parquet`** — hyperlinks between domains.
+- `source_domain_id`: the domain containing the hyperlink.
+- `target_domain_id`: the domain the hyperlink points to.
+
+**`trackers.tsv`** — metadata for the 355 candidate trackers.
+- `domain`: the tracker's own hostname.
+- `tracking_domain_id`: the tracker's domain id, matches `tracking_domain_id` elsewhere.
+- `tracker_id`: the tracker's compact 0–354 index, matches `tracker_id` elsewhere.
+- `company`: the company operating this tracker.
+- `country`: the operating company's country.
+- `category`: the tracker's function (e.g. Advertising, Analytics).
+- `brand`: parent brand/product grouping, where known.
+
+**`url-classification.csv`** — content-category label for a subset of domains.
+- `index`: row number.
+- `url`: the classified URL.
+- `category`: the content category assigned to that URL.
+
+**`freedom-of-the-press.csv`** — country-level press-freedom score, joinable by TLD.
+- `tld`: a top-level domain, e.g. `de`.
+- `country`: the country associated with that TLD.
+- `freedom_of_the_press`: press-freedom score for that country — lower means more free.
+
+**`target.tsv`** — the domains you need to predict trackers for.
+- `domain_id`: a domain you must submit predictions for.
+
+
+
+
+## Hardware
+
+The solution runs on a single machine with:
+- **CPU:** 64 logical cores (2x Intel Xeon Gold 6326 @ 2.90GHz, 16 cores / 32 threads each)
+- **Memory:** ~1 TB RAM
+- **GPU:** 4x NVIDIA A100-SXM4-80GB (80 GB each, CUDA driver 565.57.01)
+
