@@ -1,0 +1,121 @@
+# NYC housing: predicting immediately hazardous violations
+
+New York City's Department of Housing Preservation and Development (HPD) inspects
+residential buildings and issues housing-maintenance violations in four classes:
+A (non-hazardous), B (hazardous), C (immediately hazardous) and I (information orders).
+Your job is to rank buildings by their risk of a Class C violation, so that
+inspections can be prioritized.
+
+## Task
+
+For every lot in the test set, predict how likely it is to receive at least one
+Class C violation during the 12 months after the cutoff.
+
+| | |
+|---|---|
+| Cutoff | 2023-01-01 |
+| Prediction window | 2023-01-01 (inclusive) to 2024-01-01 (exclusive) |
+| Data | the lake below, as of 2023-01-01 |
+| Entity | tax lot, identified by its 10-digit BBL |
+| Test set | 171,587 lots, listed in `test_entities.parquet` |
+| Metric | average precision (higher is better) |
+
+This file, `test_entities.parquet` and `sample_submission.parquet` are in `gs://mle-nyc-lake/tasks/housing_violation_risk/v1`.
+
+## Label definition
+
+For a cutoff T, lot `b` is positive if and only if table `hpd_violations` has at least one
+row with
+
+- `class` = `'C'`,
+- `inspectiondate` in [T, T + 12 months), and
+- BBL equal to `b`, where the row's BBL is its `bbl` field when that is a 10-digit value,
+  otherwise the concatenation of `boroid` (1 digit), `block` (5 digits, zero-padded)
+  and `lot` (4 digits, zero-padded).
+
+The labels for T = 2023-01-01 are hidden. They are not in the lake, because the lake
+stops at 2023-01-01. You can compute labels for earlier cutoffs from the lake to train and
+validate. For example, T = 2022-01-01 has its whole window (2022-01-01 to
+2023-01-01) inside the lake.
+
+## Entities
+
+The test set is every lot in PLUTO release 22v3 (the latest PLUTO release
+before the cutoff) with `unitsres` >= 3, i.e. multiple dwellings. For an
+earlier cutoff, the matching set comes from the latest PLUTO release before that cutoff.
+The lake contains these releases:
+
+- `19v2` (published 2019-11-22)
+- `20v7` (published 2020-11-24)
+- `21v4` (published 2021-12-16)
+- `22v3` (published 2022-11-21)
+
+## Data
+
+The lake is at `gs://mle-nyc-lake/tasks/housing_violation_risk/v1/lake`:
+
+```
+gs://mle-nyc-lake/tasks/housing_violation_risk/v1/lake/
+  DATA_DICTIONARY.md   tables, columns, keys and source documentation
+  full/                all tables
+```
+
+Each table is a directory of Parquet files, hive-partitioned by year (`year=YYYY/`) where
+large. Column types are the ones the source portal declares, so some dates are stored as
+text. A few sources keep their original file format (trip Parquet files, a shapefile).
+The lake holds many NYC datasets, and not all of them are
+useful for this task. Tables are keyed in different ways (BBL, BIN, street addresses,
+coordinates, taxi zones), and keys are not cleaned. Every table describes what was
+known on 2023-01-01.
+
+## Accessing the data
+
+There is no local data for this task (no `input/` folder): everything, including the
+test entities and the sample submission, lives in the GCS bucket and must be read from
+there:
+
+- `gs://mle-nyc-lake/tasks/housing_violation_risk/v1/test_entities.parquet`
+- `gs://mle-nyc-lake/tasks/housing_violation_risk/v1/sample_submission.parquet`
+- `gs://mle-nyc-lake/tasks/housing_violation_risk/v1/lake/` (all training data)
+
+Read it directly with pandas (via `gcsfs`, installed in `.venv`) using the service-account
+key:
+
+```python
+import pandas as pd
+
+TOKEN = "/home/estrauss-ldap/datasets/housing_violation_risk/nyc-lake-agent-key.json"
+
+df_test = pd.read_parquet(
+    "gs://mle-nyc-lake/tasks/housing_violation_risk/v1/test_entities.parquet",
+    storage_options={"token": TOKEN},
+)
+```
+
+The same `storage_options` work for any path under the lake, e.g.
+`gs://mle-nyc-lake/tasks/housing_violation_risk/v1/lake/full/<table>/`.
+
+## Submission
+
+Submit one file, Parquet (preferred) or CSV, with one row per test lot:
+
+| column | type | meaning |
+|---|---|---|
+| `bbl` | string, 10 digits | lot id from `test_entities.parquet` |
+| `score` | float | higher = more likely positive; need not be a probability |
+
+`sample_submission.parquet` has the right shape. Submissions with duplicate lots, missing
+or non-numeric scores, or malformed BBLs are invalid. Test lots missing from a valid
+submission are ranked below every submitted lot.
+
+## Evaluation
+
+The score is average precision over all test lots (as in scikit-learn's
+`average_precision_score`). Also reported: ROC AUC; precision and recall when
+inspecting the top 1%, 5% and 10% of lots; and a bootstrap 95% interval for average
+precision.
+
+## Rules
+
+- Use only the data in the lake: no internet access, and no external datasets or models
+  trained on NYC data.
