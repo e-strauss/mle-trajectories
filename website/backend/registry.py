@@ -41,7 +41,7 @@ AGENTS = ("mle-star", "mlevolve", "mle-claude", "nano-mle", "aide")
 SKRUB_PLAN_AGENTS = ("mle-claude", "nano-mle")
 TRAJECTORY_FILES = ("final_state.json", "journal_slim.json")
 
-_DATASET_KEYS = {"label", "task", "data", "note", "metric", "defaults", "sample"}
+_DATASET_KEYS = {"label", "task", "data", "note", "metric", "defaults", "sample", "prepare"}
 _DEFAULTS_KEYS = {"source", "runtime"}
 _RUN_KEYS = {"agent", "label", "note", "trajectory", "originals", "metric", "sources",
              "runtime"}

@@ -1,0 +1,33 @@
+## Model name
+LightGBMClassifier
+
+## Example Python code
+import pandas as pd
+import lightgbm as lgb
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import accuracy_score
+
+def prepare_data(df):
+    df = df.copy()
+    df['Title'] = df['Name'].str.extract(r' ([A-Za-z]+)\.', expand=False)
+    df['FamilySize'] = df['SibSp'] + df['Parch'] + 1
+    df['IsAlone'] = (df['FamilySize'] == 1).astype(int)
+    cat_cols = ['Sex', 'Embarked', 'Title', 'Pclass']
+    for col in cat_cols:
+        df[col] = df[col].astype('category')
+    features = ['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked', 'Title', 'FamilySize', 'IsAlone']
+    return df[features]
+
+model = lgb.LGBMClassifier(
+    n_estimators=400,
+    learning_rate=0.03,
+    num_leaves=15,
+    max_depth=4,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    random_state=42
+)
+
+# X = prepare_data(train_df)
+# y = train_df['Survived']
+# model.fit(X, y)

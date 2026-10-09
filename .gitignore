@@ -35,5 +35,6 @@ __pycache__/
 # stratum bufferpool evictions
 .stratum
 
-# beaver_enroll: the BEAVER download (MySQL dump) that get_data.sh builds input/ from
-beaver_enroll/raw/
+# download caches next to a dataset: the BEAVER dump, and Kaggle competition
+# files that get_data.sh splits into input/
+*/raw/

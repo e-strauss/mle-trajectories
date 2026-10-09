@@ -1,0 +1,31 @@
+## Model name
+LightGBMClassifier
+
+## Example Python code
+import pandas as pd
+from lightgbm import LGBMClassifier
+from sklearn.model_selection import StratifiedKFold, cross_val_score
+
+# Load and prepare data
+df = pd.read_csv('train.csv')
+X = df[['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']].copy()
+y = df['Survived']
+
+# Set categorical columns as pandas category dtype
+cat_features = ['Sex', 'Embarked', 'Pclass']
+for col in cat_features:
+    X[col] = X[col].astype('category')
+
+model = LGBMClassifier(
+    n_estimators=300,
+    learning_rate=0.03,
+    num_leaves=31,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    random_state=42,
+    verbose=-1
+)
+
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+scores = cross_val_score(model, X, y, cv=cv, scoring='accuracy')
+print(f'LightGBM CV Accuracy: {scores.mean():.4f}')

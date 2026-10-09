@@ -1,0 +1,109 @@
+import pandas as pd
+from catboost import CatBoostClassifier
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
+from xgboost import XGBClassifier
+
+# Load dataset
+train_path = "./input/train.csv"
+df = pd.read_csv(train_path)
+
+target = "Survived"
+y = df[target].copy()
+
+# Base features
+features = ["Pclass", "Sex", "Age", "SibSp", "Parch", "Fare", "Embarked"]
+X = df[features].copy()
+
+# 1. Social titles from Name
+if "Name" in df.columns:
+    extracted_titles = df["Name"].str.extract(r" ([A-Za-z]+)\.", expand=False)
+    title_mapping = {
+        "Mr": "Mr",
+        "Miss": "Miss",
+        "Mrs": "Mrs",
+        "Master": "Master",
+        "Mlle": "Miss",
+        "Ms": "Miss",
+        "Mme": "Mrs",
+        "Dr": "Rare",
+        "Rev": "Rare",
+        "Col": "Rare",
+        "Major": "Rare",
+        "Capt": "Rare",
+        "Countess": "Rare",
+        "Lady": "Rare",
+        "Jonkheer": "Rare",
+        "Don": "Rare",
+        "Dona": "Rare",
+        "Sir": "Rare",
+    }
+    X["Title"] = extracted_titles.map(title_mapping).fillna("Rare")
+else:
+    X["Title"] = "Missing"
+
+# 2. Cabin deck extraction
+if "Cabin" in df.columns:
+    X["Deck"] = df["Cabin"].astype(str).str[0]
+    X["Deck"] = X["Deck"].replace({"n": "Missing", "N": "Missing"})
+else:
+    X["Deck"] = "Missing"
+
+# 3. Family-related tabular features
+X["FamilySize"] = X["SibSp"] + X["Parch"] + 1
+X["IsAlone"] = (X["FamilySize"] == 1).astype(int)
+X["FarePerPerson"] = X["Fare"] / X["FamilySize"]
+
+# Handle categorical missing values and types
+cat_features = ["Sex", "Embarked", "Pclass", "Title", "Deck"]
+X["Embarked"] = X["Embarked"].fillna("Missing")
+X["Deck"] = X["Deck"].fillna("Missing")
+X["Title"] = X["Title"].fillna("Missing")
+
+for col in cat_features:
+    X[col] = X[col].astype("category")
+
+# Train/Validation split
+X_train, X_val, y_train, y_val = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+
+# Initialize CatBoostClassifier
+cb_model = CatBoostClassifier(
+    iterations=500,
+    learning_rate=0.05,
+    depth=6,
+    cat_features=cat_features,
+    eval_metric="Accuracy",
+    random_seed=42,
+    verbose=0,
+)
+
+# Initialize XGBClassifier
+xgb_model = XGBClassifier(
+    n_estimators=300,
+    learning_rate=0.03,
+    max_depth=4,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    enable_categorical=True,
+    tree_method="hist",
+    random_state=42,
+    eval_metric="logloss",
+)
+
+# Train the models
+cb_model.fit(X_train, y_train, eval_set=(X_val, y_val), verbose=False)
+xgb_model.fit(X_train, y_train)
+
+# Predict probabilities on hold-out validation set
+cb_val_probs = cb_model.predict_proba(X_val)[:, 1]
+xgb_val_probs = xgb_model.predict_proba(X_val)[:, 1]
+
+# Ensemble predictions (simple average)
+ensemble_val_probs = (cb_val_probs + xgb_val_probs) / 2.0
+val_preds = (ensemble_val_probs >= 0.5).astype(int)
+
+final_validation_score = accuracy_score(y_val, val_preds)
+
+print(f"Final Validation Performance: {final_validation_score}")

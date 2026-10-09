@@ -1,0 +1,15 @@
+label = "Titanic"
+task = "Predict whether a passenger survived the Titanic disaster."
+note = "Kaggle titanic train.csv, split so the test set can be scored (see DATA.md)."
+
+[metric]
+name = "accuracy"
+lower_is_better = false
+
+[prepare]                      # ./get_data.sh downloads the competition, then python -m task_split
+competition = "titanic"
+train_file = "train.csv"
+target = "Survived"
+test_size = 0.2
+seed = 42
+strategy = "stratified"

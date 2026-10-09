@@ -1,0 +1,33 @@
+## Model name
+XGBoostClassifier
+
+## Example Python code
+import pandas as pd
+from xgboost import XGBClassifier
+from sklearn.model_selection import StratifiedKFold, cross_val_score
+
+# Load and prepare data
+df = pd.read_csv('train.csv')
+X = df[['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']].copy()
+y = df['Survived']
+
+# Convert categorical columns to category dtype for experimental categorical support
+cat_features = ['Sex', 'Embarked', 'Pclass']
+for col in cat_features:
+    X[col] = X[col].astype('category')
+
+model = XGBClassifier(
+    n_estimators=300,
+    learning_rate=0.03,
+    max_depth=4,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    enable_categorical=True,
+    tree_method='hist',
+    random_state=42,
+    eval_metric='logloss'
+)
+
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+scores = cross_val_score(model, X, y, cv=cv, scoring='accuracy')
+print(f'XGBoost CV Accuracy: {scores.mean():.4f}')

@@ -41,7 +41,7 @@ Pipelines read `./input/...`, and both `skrubify --run-in` and
 So `--run-in <dataset>` runs against full data and
 `--run-in <dataset>/sample_<size>` against a sample, with no edit to any pipeline.
 
-Four datasets are Kaggle competitions and have a `get_data.sh` (it formalises
+Five datasets are Kaggle competitions and have a `get_data.sh` (it formalises
 what `tools/getcomp.sh` did by hand, minus the assumption that every file is a
 flat CSV):
 
@@ -51,6 +51,11 @@ flat CSV):
 | `playground-series-s6e7` | `playground-series-s6e7` |
 | `tab_playground_dec_21` | `tabular-playground-series-dec-2021` |
 | `nyc_taxi_fare` | `new-york-city-taxi-fare-prediction` |
+| `titanic` | `titanic` |
+
+`titanic`'s script then splits the competition's labeled `train.csv` (stratified
+20%, seed 42) so the test set can be scored. The competition's own test file is
+not what the run saw; `DATA.md` records the split.
 
 The scripts are idempotent (re-running is a no-op unless passed `--force`) and
 need the competition rules accepted in the browser once, or the download returns
@@ -74,7 +79,7 @@ sampled number was measured on.
 
 ## Corpus
 
-9 datasets, 27 agent runs, **1322 pipelines** in total. One pipeline = one script
+10 datasets, 28 agent runs, **1403 pipelines** in total. One pipeline = one script
 the agent actually executed. Skrubified rewrites (`skrubify*/`) are the same
 pipeline expressed as a skrub DataOps plan, so they are not counted again.
 
@@ -101,6 +106,7 @@ pipeline expressed as a skrub DataOps plan, so they are not counted again.
 | playground-series-s6e7 | mlevolve_run_1 | mlevolve | – | 24 | – | – | **24** |
 | tab_playground_dec_21 | mle_star | MLE-STAR | 2 | 53 | 10 | 3 | **68** |
 | tab_playground_dec_21 | mle_claude_run_1 | Claude Code | – | 24 | – | – | **24** |
+| titanic | mle_star_flash_run_1 | MLE-STAR | 8 | 58 | 8 | 7 | **81** |
 | ttt-task | mlevolve_run_1 | mlevolve | – | 12 | – | – | **12** |
 | ttt-task | mlevolve_run_2 | mlevolve | – | 19 | – | – | **19** |
 | ttt-task | mlevolve_run_3 | mlevolve | – | 8 | – | – | **8** |
@@ -108,7 +114,7 @@ pipeline expressed as a skrub DataOps plan, so they are not counted again.
 | ttt-task | mle-claude-run1 | Claude Code | – | 15 | – | – | **15** |
 | ttt-task | mle-claude-run2 | Claude Code | – | 13 | 3 | – | **16** |
 | ttt-task | mle-claude-run3 | Claude Code | – | 14 | 2 | – | **16** |
-| | | | **30** | **1094** | **180** | **18** | **1322** |
+| | | | **38** | **1152** | **188** | **25** | **1403** |
 
 Runs per dataset: beaver_enroll 4, aptos2019-blindness-detection 2,
 cover_type_multi_table 2, house_price 2,
@@ -116,13 +122,14 @@ nyc-housing-violation 4 (three mlevolve, one Claude Code, plus the v2 rewrite of
 nyc_taxi_fare 3,
 playground-series-s6e7 1,
 tab_playground_dec_21 2 (one MLE-STAR, one Claude Code),
+titanic 1,
 ttt-task 7 (four mlevolve, three Claude Code).
 
 Notes on the counts:
 
 - The ablation column is MLE-STAR's ablation scripts — runnable variants of the
   current solution, but probes rather than candidate solutions. Drop them and
-  the corpus is 1142 pipelines.
+  the corpus is 1215 pipelines.
 - mlevolve keeps a script only for nodes that ran; its journals hold 31 nodes
   against 21 saved scripts (nyc_taxi_fare), 31 against 24
   (playground-series-s6e7), 16 against 12 (ttt-task run 1), 35 against 19
@@ -166,6 +173,9 @@ Notes on the counts:
 - Both aptos runs ended in agent error, and the beaver_enroll runs were never
   validated against real data (see `mle_star_flash_run_3/result.txt`) — they are
   kept as trajectories, not as working solutions.
+- `titanic/mle_star_flash_run_1` ran two solutions. Init, train, and ablation
+  each count `pipelines/1/` and `pipelines/2/`; solution 2's files are named
+  `*_sol2.py`. Ensemble is the seven scripts in `pipelines/ensemble/`.
 
 ## Tools
 

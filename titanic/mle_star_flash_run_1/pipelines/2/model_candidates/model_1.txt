@@ -1,0 +1,32 @@
+## Model name
+CatBoostClassifier
+
+## Example Python code
+import pandas as pd
+from catboost import CatBoostClassifier
+from sklearn.model_selection import StratifiedKFold, cross_val_score
+
+# Load and prepare data
+df = pd.read_csv('train.csv')
+X = df[['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']].copy()
+y = df['Survived']
+
+# Handle categorical missing values and types
+cat_features = ['Sex', 'Embarked', 'Pclass']
+X['Embarked'] = X['Embarked'].fillna('Missing')
+X[cat_features] = X[cat_features].astype(str)
+
+# CatBoost handles numerical NaNs and categorical features natively
+model = CatBoostClassifier(
+    iterations=500,
+    learning_rate=0.05,
+    depth=6,
+    cat_features=cat_features,
+    eval_metric='Accuracy',
+    random_seed=42,
+    verbose=0
+)
+
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+scores = cross_val_score(model, X, y, cv=cv, scoring='accuracy')
+print(f'CatBoost CV Accuracy: {scores.mean():.4f}')

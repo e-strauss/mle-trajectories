@@ -1,0 +1,37 @@
+## Model name
+TabPFNClassifier
+
+## Example Python code
+import pandas as pd
+from tabpfn import TabPFNClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import OrdinalEncoder
+from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+
+# Load and prepare data
+df = pd.read_csv('train.csv')
+X = df[['Pclass', 'Sex', 'Age', 'SibSp', 'Parch', 'Fare', 'Embarked']].copy()
+y = df['Survived']
+
+num_cols = ['Age', 'Fare', 'SibSp', 'Parch']
+cat_cols = ['Sex', 'Embarked', 'Pclass']
+
+preprocessor = ColumnTransformer(transformers=[
+    ('num', SimpleImputer(strategy='median'), num_cols),
+    ('cat', Pipeline([
+        ('imputer', SimpleImputer(strategy='most_frequent')),
+        ('encoder', OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1))
+    ]), cat_cols)
+])
+
+# TabPFN is a prior-data fitted transformer network specifically designed for small tabular datasets (<10k samples)
+pipe = Pipeline([
+    ('preprocessor', preprocessor),
+    ('model', TabPFNClassifier(device='cpu', N_ensemble_configurations=32))
+])
+
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+scores = cross_val_score(pipe, X, y, cv=cv, scoring='accuracy')
+print(f'TabPFN CV Accuracy: {scores.mean():.4f}')

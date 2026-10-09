@@ -1,0 +1,3 @@
+agent = "mle-star"
+label = "MLE-STAR flash run 1"
+note = "Imported from ws_baseline_3_7_flash_r1/titanic. Model gemini-3.7-flash, use_skrub=false"
