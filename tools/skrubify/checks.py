@@ -203,7 +203,7 @@ def mask_method_kwargs(source: str) -> str:
 
     ``.skb.apply(..., fit_kwargs={"eval_set": [(X_val, y_val)], ...})`` is the
     SANCTIONED way to early-stop inside a plan (guide section 7): the eval set is
-    carved out of the fold's own training rows by a ``how="no_wrap"`` transformer
+    carved out of the fold's own training rows by a ``no_wrap=True`` transformer
     and handed to ``fit`` as DataOps. Without this mask the early-stopping rule
     fires on the very pattern the contract now requires, and the repair rounds
     fight the instruction instead of the defect.
@@ -290,6 +290,22 @@ def _calls(source: str, name: str):
         yield source[: m.start()].count("\n") + 1, source[m.end(): i - 1]
 
 
+def _apply_skips_wrap(call: ast.Call) -> bool:
+    """``.skb.apply(..., no_wrap=True)``, the dict-returning GetXY form.
+
+    ``how="no_wrap"`` is the argument skrub removed in 0.11. Recognize it so a
+    plan written for that spelling still counts as a raw-domain split.
+    """
+    for kw in call.keywords:
+        if (kw.arg == "no_wrap" and isinstance(kw.value, ast.Constant)
+                and kw.value.value is True):
+            return True
+        if (kw.arg == "how" and isinstance(kw.value, ast.Constant)
+                and kw.value.value == "no_wrap"):
+            return True
+    return False
+
+
 def _target_transform_check(source: str) -> list[tuple[str, str]]:
     """Fit on a transformed target, but never invert it on the predictions?
 
@@ -341,10 +357,9 @@ def _target_transform_check(source: str) -> list[tuple[str, str]]:
         if marks_y(node.value):
             marked |= targets
         elif is_apply(node.value):
-            # A plan node, not target arithmetic. `how="no_wrap"` marks the
+            # A plan node, not target arithmetic. `no_wrap=True` marks the
             # dict-returning splitter whose pieces stay in the raw domain.
-            if any(kw.arg == "how" and getattr(kw.value, "value", None) == "no_wrap"
-                   for kw in node.value.keywords):
+            if _apply_skips_wrap(node.value):
                 splits |= targets
         elif is_lookup(node.value, splits):
             marked |= targets
@@ -470,7 +485,7 @@ def _early_stopping_check(source: str) -> list[tuple[str, str]]:
                             f"{callee or 'a booster'} applied directly in the plan, "
                             "which has no eval set. Pass it through "
                             '`fit_kwargs={"eval_set": [(X_val, y_val)]}` fed by a '
-                            '`how="no_wrap"` GetXY transformer (guide section 7), or '
+                            '`no_wrap=True` GetXY transformer (guide section 7), or '
                             "move the model into a wrapper estimator that makes its "
                             "own inner split in fit(). Do NOT delete early stopping."))
     return out
@@ -677,7 +692,7 @@ def _gratuitous_wrapper_check(source: str) -> list[tuple[str, str]]:
                     "fold's rows and fits one estimator, so the wrapper exists "
                     "purely to hold an inner split -- which contract rule and "
                     f"guide section 7 assign to `GetXY`.{why} Replace the class "
-                    'with the `how="no_wrap"` GetXY transformer + '
+                    'with the `no_wrap=True` GetXY transformer + '
                     '`fit_kwargs={"eval_set": (X_val, y_val), ...}`, keeping the '
                     "original's patience and split fraction. A wrapper is "
                     "correct only when `fit` does something no recorded op can "
@@ -741,7 +756,7 @@ def _dropped_early_stopping_check(source: str, original: str | None
              "no early stopping at all. Deleting it is not an option: it trains "
              "the full `n_estimators` and shifts the score far beyond any "
              "tolerance. Carve the eval set out of the fold's OWN training rows "
-             'with the `how="no_wrap"` GetXY transformer and pass it as '
+             'with the `no_wrap=True` GetXY transformer and pass it as '
              '`fit_kwargs={"eval_set": [(X_val, y_val)], ...}` (guide section '
              "7), keeping the original's patience. If the original early-stopped "
              "on the very rows it reports as its score, that number is "
