@@ -578,7 +578,7 @@ class GetXY(TransformerMixin, BaseEstimator):
         return {"X": X, "X_val": None, "y": None, "y_val": None}
 
 
-X_y = X.skb.apply(GetXY(), y=y, how="no_wrap")
+X_y = X.skb.apply(GetXY(), y=y, no_wrap=True)
 X_fit = X_y["X"]
 y_fit = X_y.get("y", y)          # default is for predict/score mode
 X_val, y_val = X_y["X_val"], X_y["y_val"]
@@ -593,10 +593,12 @@ pred = X_fit.skb.apply(
 
 Four things make this work, and three of them are easy to get wrong:
 
-1. **`how="no_wrap"` is mandatory.** The default `how="auto"` routes the
-   estimator through `ApplyToSubFrame`, which enforces a pandas container out and
-   rejects the dict with `TypeError: GetXY.fit_transform returned a result of
-   type dict, but a pandas DataFrame was expected` (pitfall 22).
+1. **`no_wrap=True` is mandatory.** The default wraps a transformer whose input
+   is a dataframe in `ApplyToCols`, and that wrapper enforces a pandas container
+   out. A dict is rejected with `TypeError: GetXY.fit_transform returned a
+   result of type dict, but a pandas DataFrame was expected` (pitfall 22).
+   `no_wrap=True` applies the estimator directly. The older argument
+   `how="no_wrap"` was removed in skrub 0.11 and raises `TypeError`.
 2. **A transformer, not `apply_func`/`deferred`.** A plain function would have to
    branch on `skrub.eval_mode()` by hand to avoid touching `y` in predict mode.
    Keep the key SET stable between `fit_transform` and `transform` and fill the

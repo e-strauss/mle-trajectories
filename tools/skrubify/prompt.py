@@ -127,10 +127,11 @@ Your job is a FAITHFUL TRANSLATION, not a redesign:
   `early_stopping_rounds` / `eval_set` handed to an estimator applied directly
   in the plan has no eval set and cannot stay as written, but the fix is the
   `GetXY` + `fit_kwargs={"eval_set": ...}` pattern of the guide's section 7: a
-  `how="no_wrap"` transformer that splits the fold's OWN training rows and
-  returns a dict, whose pieces are then handed to `fit_kwargs` as DataOps. Copy
-  it from the guide, keeping the original's patience, `n_estimators` and split
-  fraction. It works for every booster, but each spells the patience its own
+  transformer applied with `no_wrap=True` that splits the fold's OWN training
+  rows and returns a dict, whose pieces are then handed to `fit_kwargs` as
+  DataOps. `how="no_wrap"` was removed in skrub 0.11 and raises `TypeError`.
+  Copy it from the guide, keeping the original's patience, `n_estimators` and
+  split fraction. It works for every booster, but each spells the patience its own
   way and getting it wrong fails at SCORING time, not build time:
   - CatBoost: `fit_kwargs={"eval_set": (X_val, y_val),
     "early_stopping_rounds": 50}`.
