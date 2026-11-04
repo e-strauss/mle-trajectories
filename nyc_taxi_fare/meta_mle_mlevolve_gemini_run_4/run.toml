@@ -1,3 +1,7 @@
 agent = "meta-mle"
 label = "meta-mle mlevolve profile (Gemini 3.8 Flash, 8h, 8 cores)"
 note = "meta-mle mlevolve search, model gemini/gemini-3.8-flash. 46 scored expansions, 0 failed. Locked neg_root_mean_squared_error on 487784 rows. 8h budget, 8 cores + 1 A100. The agent chose a 488k-row sample of train.csv.gz itself; the task description showed a full read. Plans read task sources from GCS (gs://mle-trajectories-data/nyc_taxi_fare/input)."
+
+[sources.skrubify_manual]
+label = "hand skrubify (skorch)"
+note = "pipeline_36 (best candidate) rewritten by hand so its structure is inspectable: features as fine-grained DataOps in named blocks (bitwise identical to the original's 154 columns), the tri-ensemble lifted into the graph (residual_target, resnet, lgbm, xgb, eval-mode-gated blend), and the ResNet trained by a plain skorch NeuralNetRegressor without loop overrides. 5-fold CV: skrub 3.92145, stratum 3.92201, vs the agent's 3.91886 (fold 0 run-to-run spread of the original itself: 4.128-4.136)."
