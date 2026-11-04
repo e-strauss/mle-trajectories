@@ -1,3 +1,0 @@
-agent = "mle-star"
-label = "MLE-STAR run 1"
-note = "No final_state.json kept, so no lineage or scores."

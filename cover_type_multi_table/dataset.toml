@@ -1,7 +1,0 @@
-label = "Cover type (multi-table)"
-task = "binary classification over 17 relational tables"
-note = "Zenodo autofeat tar rebuilt into 17 tables (see DATA.md). 3-fold stratified CV, seed 42."
-
-[metric]
-name = "roc_auc"
-lower_is_better = false

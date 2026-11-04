@@ -1,4 +1,4 @@
-œ# mle-trajectories
+# mle-trajectories
 
 Development trajectories of ML engineering agents (MLE-STAR, mlevolve, Claude
 Code), collected per dataset, plus tooling to compare the pipelines they produce.
@@ -61,11 +61,10 @@ The scripts are idempotent (re-running is a no-op unless passed `--force`) and
 need the competition rules accepted in the browser once, or the download returns
 403 rather than the data.
 
-The other four are not on Kaggle and carry a `DATA.md` instead, recording the
+The other three are not on Kaggle and carry a `DATA.md` instead, recording the
 upstream, the derivation needed to reach the `input/` layout, and the local path
 on this machine where one exists: `house_price` (HM Land Registry price-paid plus
-an out-of-time split), `cover_type_multi_table` (a Zenodo autofeat tar rebuilt
-into 17 tables), `ttt-task` (TrackTheTrackers), `beaver_enroll` (the BEAVER
+an out-of-time split), `ttt-task` (TrackTheTrackers), `beaver_enroll` (the BEAVER
 benchmark, not present here).
 
 Full data is the wrong size for skrubify's repair loop, which runs the candidate
@@ -79,7 +78,7 @@ sampled number was measured on.
 
 ## Corpus
 
-10 datasets, 28 agent runs, **1403 pipelines** in total. One pipeline = one script
+9 datasets, 26 agent runs, **1352 pipelines** in total. One pipeline = one script
 the agent actually executed. Skrubified rewrites (`skrubify*/`) are the same
 pipeline expressed as a skrub DataOps plan, so they are not counted again.
 
@@ -91,8 +90,6 @@ pipeline expressed as a skrub DataOps plan, so they are not counted again.
 | beaver_enroll | mle_star_flash_run_2 | MLE-STAR | 5 | 114 | 36 | 3 | **158** |
 | beaver_enroll | mle_star_flash_run_3 | MLE-STAR | 5 | 114 | 36 | 3 | **158** |
 | beaver_enroll | mle_star_flash_run_4 | MLE-STAR | 5 | 114 | 36 | 3 | **158** |
-| cover_type_multi_table | mle_star_run_1 | MLE-STAR | 2 | 9 | 2 | – | **13** |
-| cover_type_multi_table | mle_star_run_2 | MLE-STAR | 2 | 28 | 5 | 3 | **38** |
 | house_price | mlevolve_run_1 | mlevolve | – | 13 | – | – | **13** |
 | house_price | mlevolve_run_2 | mlevolve | – | 46 | – | – | **46** |
 | nyc-housing-violation | mlevolve_run_0 | mlevolve | – | 18 | – | – | **18** |
@@ -114,10 +111,10 @@ pipeline expressed as a skrub DataOps plan, so they are not counted again.
 | ttt-task | mle-claude-run1 | Claude Code | – | 15 | – | – | **15** |
 | ttt-task | mle-claude-run2 | Claude Code | – | 13 | 3 | – | **16** |
 | ttt-task | mle-claude-run3 | Claude Code | – | 14 | 2 | – | **16** |
-| | | | **38** | **1152** | **188** | **25** | **1403** |
+| | | | **34** | **1115** | **181** | **22** | **1352** |
 
 Runs per dataset: beaver_enroll 4, aptos2019-blindness-detection 2,
-cover_type_multi_table 2, house_price 2,
+house_price 2,
 nyc-housing-violation 4 (three mlevolve, one Claude Code, plus the v2 rewrite of the latter),
 nyc_taxi_fare 3,
 playground-series-s6e7 1,
