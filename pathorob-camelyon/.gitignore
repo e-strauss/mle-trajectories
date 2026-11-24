@@ -1,0 +1,6 @@
+/input
+!mlevolve_*/evaluation.json
+!mlevolve_*/import_manifest.json
+!mlevolve_*/launch.json
+# Prediction files stay local; scores and run metadata are versioned.
+/mlevolve_*/submissions/

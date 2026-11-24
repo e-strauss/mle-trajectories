@@ -1,0 +1,8 @@
+label = "PathoROB Camelyon"
+task = "binary pathology image classification across medical centers"
+data = "local"
+note = "22,402 RGB 256x256 patches. Fixed slide-disjoint train/validation/hidden ID splits; all official OOD centers held out. Test scores report balanced accuracy on 2,002 unseen-center patches, threshold 0.5. Adapted image classification task, not the original PathoROB representation-robustness benchmark. See DATA.md."
+
+[metric]
+name = "balanced_accuracy"
+lower_is_better = false

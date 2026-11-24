@@ -28,7 +28,7 @@ iteration, and what it kept.
 
 ## Data
 
-The new agent-visible GCS bucket is `gs://mle-trajectories-data`, with prefixes
+The agent-visible GCS bucket is `gs://mle-trajectories-data`, with prefixes
 matching the dataset folders. Four Kaggle datasets keep their original train/test splits; UK housing has a
 versioned temporal test with private labels. UK housing, NYC taxi, S6E7,
 December 2021 and APTOS are verified. TrackTheTrackers inputs are also verified;
@@ -62,11 +62,13 @@ The scripts are idempotent (re-running is a no-op unless passed `--force`) and
 need the competition rules accepted in the browser once, or the download returns
 403 rather than the data.
 
-Three of the others are not on Kaggle and carry a `DATA.md` instead, recording
+Four of the others are not on Kaggle and carry a `DATA.md` instead, recording
 the upstream, the derivation needed to reach the `input/` layout, and the local
 path on this machine where one exists: `house_price` (HM Land Registry
 price-paid plus an out-of-time split), `ttt-task` (TrackTheTrackers),
-`beaver_enroll` (the BEAVER benchmark, not present here). `nyc-housing-violation`
+`beaver_enroll` (the BEAVER benchmark, not present here), and
+`pathorob-camelyon` (PathoROB histopathology patches with slide-disjoint
+development splits and held-out medical centers). `nyc-housing-violation`
 reads its lake straight from GCS, and `voice-intent` is built by its
 `prepare.py` from AmazonScience/MASSIVE.
 
@@ -81,13 +83,13 @@ sampled number was measured on.
 
 ## Corpus
 
-11 dataset folders, 52 agent runs, **1933 pipelines** in total (as of
-2026-11-04). One pipeline = one script the agent actually executed. Skrubified
-rewrites (`skrubify*/`) are the same pipeline expressed as a skrub DataOps plan,
-so they are not counted again. `voice-intent` is prepared (data on GCS, task
-description) but has no runs yet. The numbers below come from the website's
-registry and code analysis (`/api/corpus`, `/api/runs/<dataset>/<run>`,
-`/api/dashboard`), so re-query those rather than recount by hand.
+12 dataset folders, 54 agent runs, **1969 pipelines** in total. One pipeline =
+one script the agent actually executed. Skrubified rewrites (`skrubify*/`) are
+the same pipeline expressed as a skrub DataOps plan, so they are not counted
+again. `voice-intent` is prepared (data on GCS, task description) but has no
+runs yet. The numbers below come from the website's registry and code analysis
+(`/api/corpus`, `/api/runs/<dataset>/<run>`, `/api/dashboard`), so re-query those
+rather than recount by hand.
 
 ### Datasets
 
@@ -98,6 +100,7 @@ registry and code analysis (`/api/corpus`, `/api/runs/<dataset>/<run>`,
 | house_price | tabular, single table, temporal | regression, out-of-time split | RMSE on log10(price) | 22.1M / 375k rows | 2 | 59 | – (private labels exist) |
 | nyc-housing-violation | tabular, multi-table (71-table data lake) | binary classification | average precision | lake on GCS | 4 | 155 | – |
 | nyc_taxi_fare | tabular, single table, geo + time | regression | RMSE | 55.4M / 9,914 rows | 14 | 338 | Kaggle public LB |
+| pathorob-camelyon | image (histopathology PNGs + label CSV) | binary tumor classification | balanced accuracy | 13,200 train + 3,600 validation / 5,602 test images | 2 | 36 | local split; unseen centers primary |
 | playground-series-s6e7 | tabular, single table (synthetic student health) | 3-class classification | balanced accuracy | 690k / 296k rows | 1 | 24 | – |
 | spaceship-titanic | tabular, single table, small | binary classification | accuracy | 8,693 / 4,277 rows | 6 | 208 | Kaggle public LB |
 | tab_playground_dec_21 | tabular, single table (synthetic forest cover) | 7-class classification | accuracy | 4M / 1M rows | 7 | 141 | Kaggle private LB |
@@ -111,7 +114,7 @@ registry and code analysis (`/api/corpus`, `/api/runs/<dataset>/<run>`,
 | --- | --- | --- | --- |
 | MLE-STAR | 8 | 861 | 4 |
 | meta-mle | 22 | 491 | 4 |
-| mlevolve | 15 | 453 | 6 |
+| mlevolve | 17 | 489 | 7 |
 | Claude Code | 5 | 102 | 3 |
 | AIDE | 2 | 26 | 2 |
 
@@ -158,6 +161,8 @@ copies, not agent runs, and are not in the totals.
 | nyc_taxi_fare | mlevolve_run_1 | mlevolve | Gemini 3.6 Flash | 30 steps / 3 h | **21** | 31 | 3.9418 | 3.0721 | LightGBM, XGBoost, CatBoost |
 | nyc_taxi_fare | mlevolve_run_2 | mlevolve | Gemini 3.8 Flash | 20 steps / 20 h | **17** | 21 | 2.6838 | 3.2408 | LightGBM, XGBoost, custom NN |
 | nyc_taxi_fare | mlevolve_run_3 | mlevolve | Gemini 3.8 Flash | 20 steps / 20 h | **18** | 21 | 2.4933 | 3.1769 | LightGBM, XGBoost, CatBoost |
+| pathorob-camelyon | mlevolve_carbon_run_1 | mlevolve | Gemini 4 Carbon / Neon | 20 steps / 12 h | **16** | 17 | 0.9717 | 0.9731 | custom NN, timm CNN, LightGBM, XGBoost |
+| pathorob-camelyon | mlevolve_neon_run_1 | mlevolve | Gemini 4 Neon | 20 steps / 12 h | **20** | 21 | 0.9750 | 0.9771 | custom NN, timm CNN |
 | playground-series-s6e7 | mlevolve_run_1 | mlevolve | Gemini 3.6 Flash | 30 steps / 3 h | **24** | 31 | 0.9504 | – | custom NN, CatBoost, XGBoost |
 | spaceship-titanic | meta_mle_aide_gemini_run_1 | meta-mle (aide profile) | Gemini 3.8 Flash | 2 h | **24** | 24 | 0.8215 | 0.8078 | CatBoost |
 | spaceship-titanic | meta_mle_fm_agent_gemini_run_1 | meta-mle (fm-agent / islands) | Gemini 3.8 Flash | 2 h | **52** | 52 | 0.8210 | 0.8073 | CatBoost, LightGBM, XGBoost |
@@ -184,7 +189,7 @@ copies, not agent runs, and are not in the totals.
 | ttt-task | mlevolve_run_2 | mlevolve | Gemini 3.8 Flash | 50 steps / 12 h | **19** | 35 | 0.9161 | 0.8862 | custom NN |
 | ttt-task | mlevolve_run_3 | mlevolve | Gemini 3.8 Flash | 10 steps / 16 h | **8** | 11 | 0.8895 | 0.8525 | custom NN |
 | ttt-task | mlevolve_run_4 | mlevolve | Gemini 3.8 Flash | 100 steps / 36 h | **81** | 101 | 0.9091 | 0.8690 | custom NN, SGD |
-| | | | | | **1933** | | | | |
+| | | | | | **1969** | | | | |
 
 ### Models
 
@@ -200,24 +205,24 @@ with no model class, which is what most ttt-task scripts outside the NNs are.
 | house_price | 2 | 59 | LightGBM 83%, custom NN 66%, XGBoost 36%, CatBoost 24%, Ridge 8% |
 | nyc-housing-violation | 4 | 155 | LightGBM 83%, custom NN 63%, XGBoost 62%, CatBoost 45%, HistGB 12% |
 | nyc_taxi_fare | 14 | 338 | LightGBM 73%, custom NN 59%, XGBoost 57%, CatBoost 6%, Ridge 4% |
+| pathorob-camelyon | 2 | 36 | custom NN 100%, timm CNN 100%, LightGBM 11%, XGBoost 11%, HistGB 3%, logistic regression 3% |
 | playground-series-s6e7 | 1 | 24 | custom NN 100%, CatBoost 100%, XGBoost 100%, LightGBM 100%, ExtraTrees 4% |
 | spaceship-titanic | 6 | 208 | LightGBM 63%, CatBoost 60%, XGBoost 43%, custom NN 22%, logistic regression 20% |
 | tab_playground_dec_21 | 7 | 141 | LightGBM 46%, random forest 46%, custom NN 4%, XGBoost 2%, HistGB 1% |
 | titanic | 1 | 81 | CatBoost 93%, XGBoost 52%, custom NN 49%, LightGBM 16%, logistic regression 11% |
 | ttt-task | 11 | 215 | custom NN 74%, no ML library 19%, LightGBM 7%, SGD 7%, XGBoost 4% |
 
-Across the corpus: LightGBM 42%, custom NN 36%, random forest 35%, XGBoost 25%,
-CatBoost 17%, TabNet 8%, TabPFN 7%, timm CNN 4%, logistic regression 4%, no ML
+Across the corpus: LightGBM 42%, custom NN 37%, random forest 35%, XGBoost 25%,
+CatBoost 17%, TabNet 7%, TabPFN 7%, timm CNN 6%, logistic regression 4%, no ML
 library 2%, HistGB 2%, Ridge 1%.
 
 - Gradient boosting (LightGBM, XGBoost, CatBoost) is the default on every
   tabular dataset. A custom NN usually sits next to it, as an ensemble member
   rather than a replacement: 59-66% of the pipelines on nyc_taxi_fare,
   house_price and nyc-housing-violation, and every s6e7 pipeline.
-- On aptos, every script builds its own network around a `timm` backbone, so
-  both names count for all of them.
-- ttt-task is the one dataset where boosting is rare: NNs and hand-written
-  rankers do the work.
+- On aptos and pathorob-camelyon, every script builds its own network around
+  a `timm` backbone, so both names count for all of them.
+- On ttt-task, NNs and hand-written rankers dominate.
 - The random-forest share comes almost entirely from MLE-STAR (beaver_enroll,
   tab_playground_dec_21).
 
@@ -233,7 +238,7 @@ Notes on the counts:
   variants of the current solution, probes rather than candidates) and 5 in
   ttt-task Claude Code runs (`ablation_NN.py` in run 2; `pipeline_05.py` and
   `pipeline_10.py` in run 3, fused-choice grids of 8 and 16 variants). Without
-  them, the corpus is 1752 pipelines.
+  them, the corpus is 1788 pipelines.
 - Degenerate scores: beaver_enroll's best CV values of 1.0 and 0.0 are not
   real (the runs were never validated against real data, see
   `mle_star_flash_run_3/result.txt`). Both aptos runs ended in agent error.
@@ -248,6 +253,14 @@ Notes on the counts:
   a peer of the GBDT libraries in run 3. Neither run used it in any node.
   Their best CV (2.49-2.68) is on the agent's own split and is not comparable
   to the meta-mle runs' locked CV; the Kaggle test column is.
+- `pathorob-camelyon` uses fixed slide-disjoint validation; the test column
+  reports balanced accuracy on 2,002 unseen-center patches at threshold 0.5.
+  Final submissions were selected by validation; per-step hidden scores were
+  computed after the runs. Carbon used Neon for feedback and reached the
+  12-hour cutoff after 16 journaled attempts; two interrupted scripts are
+  stored separately and excluded from the counts. Neon completed 20 attempts
+  in about 9h09m with one GPU per worker; Carbon used shared GPU visibility,
+  so elapsed time is not a controlled model-only comparison.
 - meta-mle nyc_taxi_fare runs chose their own training sample (0.5M-26M rows;
   see each `run.toml`). `meta_mle_mlevolve_gemini_run_4_upscaled{,_tuned}`
   re-run run 4's code on 10M rows (the tuned copy also hand-tunes

@@ -1,0 +1,57 @@
+Classify histopathology image patches as normal tissue or tumor tissue.
+
+Goal
+Build a binary image-classification pipeline for 256 x 256 RGB patches from
+H&E-stained lymph-node microscopy. The positive class is tumor (label 1);
+normal tissue is label 0. Predict the probability of tumor for every test image.
+The evaluation emphasizes generalization to images from previously unseen
+medical centers. Test data include both unseen slides from development centers
+and slides from unseen centers. Their membership and labels are withheld.
+
+Available files under ./input/
+- train.csv: sample_id, image_path, label, slide_id, group_id, center_id.
+- validation.csv: the same columns, with a fixed, labeled validation partition.
+- test.csv: sample_id and image_path only.
+- sample_submission.csv: exact required submission columns and test IDs.
+- images/: PNG images. image_path is relative to ./input/.
+- metric.py: binary_metrics(labels, probabilities), the evaluation implementation.
+- DATA_DICTIONARY.md: field meanings and validation guidance.
+
+Validation
+Use the supplied validation partition for model and hyperparameter selection.
+All patches from any slide/group must stay together in any additional splits.
+Training and validation contain disjoint slides from the same two development
+centers; therefore validation alone does not measure unseen-center performance.
+You may also perform center-held-out validation within the training data.
+Use image pixels as prediction inputs. slide_id and group_id support splitting;
+center_id may support splitting, sampling and training-time domain methods.
+Do not use these metadata identifiers as prediction features or require them
+at inference. Test metadata contains only sample_id and image_path.
+Fit preprocessing and any learned representation adaptation on training data
+only during validation. Do not train on test images, use test labels, retrieve
+original labeled datasets, or use external labeled copies of these samples.
+Pretrained models are permitted; document their identity, version, and known
+training-data overlap. External weights must be made available through the run
+environment. Model choice, augmentation, fine-tuning, and ensembling are open.
+After selecting the final pipeline, you may refit it on train plus validation.
+Report the validation result from before that refit, not a score on refit data.
+
+Metric
+Primary hidden score: balanced accuracy on the unseen-center test subset.
+Balanced accuracy = (tumor recall + normal recall) / 2; higher is better.
+Use a fixed threshold of 0.5: tumor_probability >= 0.5 predicts tumor.
+For local selection, compute balanced accuracy on the fixed validation set with
+this same threshold. Also report validation AUROC when possible. Final scoring
+additionally reports AUROC and performance on unseen slides from known centers.
+No hidden test scores are available during development or model selection.
+Print the measured local score exactly as:
+print(f'Final Validation Score: {validation_balanced_accuracy}')
+
+Submission
+Write ./submission/submission.csv with exactly these columns:
+sample_id,tumor_probability
+Include every sample_id in test.csv exactly once, with a finite probability
+between 0 and 1. Match sample_submission.csv. The 0.5 values in the sample are
+format examples, not labels or acceptable substitutes for model predictions.
+Every submitted probability must come from your trained prediction pipeline.
+Write intermediate artifacts to ./working/; treat ./input/ as read-only.

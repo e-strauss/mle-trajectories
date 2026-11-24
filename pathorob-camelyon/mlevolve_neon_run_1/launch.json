@@ -1,0 +1,44 @@
+{
+  "started_at_utc": "2026-11-23T13:58:03.753321+00:00",
+  "pid": 2575603,
+  "command": [
+    "bash",
+    "/home/estrauss-ldap/repos/MLEvolve/run_camelyon.sh",
+    "camelyon-neon-only-20steps-gpufix"
+  ],
+  "settings": {
+    "MLEVOLVE_ROOT": "/home/estrauss-ldap/repos/MLEvolve",
+    "PYTHON": "/home/estrauss-ldap/repos/MLEvolve/.venv/bin/python",
+    "TASK_ROOT": "/data/estrauss-ldap/pathorob/camelyon",
+    "RUNS_DIR": "/data/estrauss-ldap/pathorob/camelyon/runs",
+    "SOCKET_ID": "1",
+    "STEPS": "20",
+    "BRANCHES": "2",
+    "DRAFTS": "2",
+    "EXEC_TIMEOUT": "3600",
+    "TIME_LIMIT_SECS": "43200",
+    "CODE_MODEL": "gemini-4-neon",
+    "FEEDBACK_MODEL": "gemini-4-neon",
+    "CPUS_PER_TASK": "32",
+    "GPU_IDS": "2,3"
+  },
+  "console_log": "/data/estrauss-ldap/pathorob/camelyon/runs/_launches/20261123T135803Z_neon_only_20steps_gpufix/console.log",
+  "working_directory": "/home/estrauss-ldap/repos/MLEvolve",
+  "source_sha256": {
+    "run_camelyon.sh": "601be7caafe1e647bb2e1fc47f124d9403c3a7dec906f68f31f2089438223a6f",
+    "run.py": "14d109641dcd1208a5451292ac0af1045ca4d063026d409bc63f9a047fb3e925",
+    "engine/executor.py": "dd2783a7cd4a3de6ba8f5f26ca1860897fa2f5a73dc5a133bacb630694da5113",
+    "llm/gemini.py": "a2b771e73dafb203dde958a90e9c25f2e75ae6a87ce828cc3537e56f0c67cf84",
+    "config/config.yaml": "2699bada5f58b95bdf82cd99112b875c3dc6504cc3b61eba137486db5890c8a3",
+    "agents/prompts/impl_guideline.py": "24416f2871998fa6cc5a0f857e696d2c361950996800d9b1f2b892d4b66d5e60",
+    "tests/test_executor_gpu_assignment.py": "cc55b69016c29a7a89b26340e5cd633511c3873a2fe7724fd80052bcefac22c9"
+  },
+  "gpu_assignment": {
+    "worker_0": "physical GPU 2; local cuda:0",
+    "worker_1": "physical GPU 3; local cuda:0"
+  },
+  "parallel_run": {
+    "existing_agent_pid": 2506612,
+    "existing_run_unchanged": true
+  }
+}

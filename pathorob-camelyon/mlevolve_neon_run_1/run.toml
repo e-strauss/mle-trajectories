@@ -1,0 +1,3 @@
+agent = "mlevolve"
+label = "MLEvolve — Neon coding + Neon feedback"
+note = "Neon coding + Neon feedback. 20-step / 12-hour budget, two workers, 1-hour pipeline timeout. Socket 1; one GPU per worker (physical GPUs 2 and 3). Completed all 20 steps in about 9h09m. Original pipeline code retained including failed nodes; no DataOps conversion. Hidden scores computed after the run. Hardware allocation differs, so timing is not a controlled model-only comparison."

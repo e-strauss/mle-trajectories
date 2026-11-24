@@ -1,0 +1,937 @@
+{
+  "final": {
+    "agent_marked_buggy": false,
+    "node_id": "139c6bf230224216affcaa3e7dd9cbb7",
+    "pipeline": "0005_139c6bf230224216affcaa3e7dd9cbb7",
+    "scores": {
+      "by_center": {
+        "CWZ": {
+          "accuracy": 0.9712990936555891,
+          "auroc": 0.999415765210644,
+          "balanced_accuracy": 0.9716052763704414,
+          "n_samples": 662
+        },
+        "LPON": {
+          "accuracy": 0.991044776119403,
+          "auroc": 0.9999732679884161,
+          "balanced_accuracy": 0.991044776119403,
+          "n_samples": 670
+        },
+        "RST": {
+          "accuracy": 0.9567164179104478,
+          "auroc": 0.997313432835821,
+          "balanced_accuracy": 0.9567164179104477,
+          "n_samples": 670
+        },
+        "RUMC": {
+          "accuracy": 0.9833333333333333,
+          "auroc": 0.9992024691358024,
+          "balanced_accuracy": 0.9833333333333334,
+          "n_samples": 1800
+        },
+        "UMCU": {
+          "accuracy": 0.9944444444444445,
+          "auroc": 0.9999012345679014,
+          "balanced_accuracy": 0.9944444444444445,
+          "n_samples": 1800
+        }
+      },
+      "by_split": {
+        "test_id": {
+          "accuracy": 0.9888888888888889,
+          "auroc": 0.9996308641975308,
+          "balanced_accuracy": 0.9888888888888889,
+          "n_samples": 3600
+        },
+        "test_ood": {
+          "accuracy": 0.973026973026973,
+          "auroc": 0.9991342185761264,
+          "balanced_accuracy": 0.9731103759038309,
+          "n_samples": 2002
+        }
+      },
+      "id_minus_ood_balanced_accuracy": 0.015778512985058057,
+      "primary_metric": "test_ood.balanced_accuracy",
+      "primary_score": 0.9731103759038309,
+      "threshold": 0.5
+    },
+    "step": 5,
+    "submission": "submissions/submission_139c6bf230224216affcaa3e7dd9cbb7.csv",
+    "submission_sha256": "fc52c1deeffbea5065b25ce68ab3849b4319c77707d3513f1431f20d2637f680",
+    "validation_score": 0.9716666666666667
+  },
+  "labels_sha256": "288cc381231032ba4e8f8d3d33212b3fd66a642d6aeb2753a05d942cf466e906",
+  "metric_sha256": "6a79bd4dfa1e83088362b9ba83f3648041b4a484812896bdc4f696303df41b92",
+  "primary_metric": "test_ood.balanced_accuracy",
+  "scored_at": "2026-11-24T12:11:43.958125+00:00",
+  "scorer_sha256": "0556f554ca5cfe759ea9aaf2c68ebef04a3cfd234864fa76a3d178a9de804646",
+  "selection_rule": "maximum recorded validation score among non-buggy nodes, locked before hidden scoring",
+  "steps": [
+    {
+      "agent_marked_buggy": false,
+      "node_id": "6f95f1f9957f48f08c2913b5ad8dddc5",
+      "pipeline": "0001_6f95f1f9957f48f08c2913b5ad8dddc5",
+      "scores": {
+        "by_center": {
+          "CWZ": {
+            "accuracy": 0.9848942598187311,
+            "auroc": 0.9974257154594003,
+            "balanced_accuracy": 0.9849650828426675,
+            "n_samples": 662
+          },
+          "LPON": {
+            "accuracy": 0.9955223880597015,
+            "auroc": 0.9999821786589441,
+            "balanced_accuracy": 0.9955223880597015,
+            "n_samples": 670
+          },
+          "RST": {
+            "accuracy": 0.9776119402985075,
+            "auroc": 0.9938961906883493,
+            "balanced_accuracy": 0.9776119402985075,
+            "n_samples": 670
+          },
+          "RUMC": {
+            "accuracy": 0.9822222222222222,
+            "auroc": 0.9966944444444445,
+            "balanced_accuracy": 0.9822222222222222,
+            "n_samples": 1800
+          },
+          "UMCU": {
+            "accuracy": 0.9905555555555555,
+            "auroc": 0.9981092592592593,
+            "balanced_accuracy": 0.9905555555555556,
+            "n_samples": 1800
+          }
+        },
+        "by_split": {
+          "test_id": {
+            "accuracy": 0.9863888888888889,
+            "auroc": 0.9975658950617283,
+            "balanced_accuracy": 0.9863888888888889,
+            "n_samples": 3600
+          },
+          "test_ood": {
+            "accuracy": 0.986013986013986,
+            "auroc": 0.9971097371717141,
+            "balanced_accuracy": 0.9860417072111858,
+            "n_samples": 2002
+          }
+        },
+        "id_minus_ood_balanced_accuracy": 0.00034718167770309005,
+        "primary_metric": "test_ood.balanced_accuracy",
+        "primary_score": 0.9860417072111858,
+        "threshold": 0.5
+      },
+      "step": 1,
+      "submission": "submissions/submission_6f95f1f9957f48f08c2913b5ad8dddc5.csv",
+      "submission_sha256": "3e05640b052236bb7682901fdb1cf163a96e4e6ba79eb1bd9ce25c301a94d71b",
+      "validation_score": 0.9538888888888889
+    },
+    {
+      "agent_marked_buggy": false,
+      "node_id": "d1667fd8908541bb8dc7bf55ff8eacf7",
+      "pipeline": "0002_d1667fd8908541bb8dc7bf55ff8eacf7",
+      "scores": {
+        "by_center": {
+          "CWZ": {
+            "accuracy": 0.9622356495468278,
+            "auroc": 0.9986306997124469,
+            "balanced_accuracy": 0.9626865671641791,
+            "n_samples": 662
+          },
+          "LPON": {
+            "accuracy": 0.9940298507462687,
+            "auroc": 1.0,
+            "balanced_accuracy": 0.9940298507462686,
+            "n_samples": 670
+          },
+          "RST": {
+            "accuracy": 0.9641791044776119,
+            "auroc": 0.9964624638004009,
+            "balanced_accuracy": 0.9641791044776119,
+            "n_samples": 670
+          },
+          "RUMC": {
+            "accuracy": 0.9711111111111111,
+            "auroc": 0.9982617283950617,
+            "balanced_accuracy": 0.971111111111111,
+            "n_samples": 1800
+          },
+          "UMCU": {
+            "accuracy": 0.9938888888888889,
+            "auroc": 0.9994913580246914,
+            "balanced_accuracy": 0.9938888888888888,
+            "n_samples": 1800
+          }
+        },
+        "by_split": {
+          "test_id": {
+            "accuracy": 0.9825,
+            "auroc": 0.9991743827160494,
+            "balanced_accuracy": 0.9824999999999999,
+            "n_samples": 3600
+          },
+          "test_ood": {
+            "accuracy": 0.9735264735264735,
+            "auroc": 0.9985678428319785,
+            "balanced_accuracy": 0.9736118804173715,
+            "n_samples": 2002
+          }
+        },
+        "id_minus_ood_balanced_accuracy": 0.008888119582628473,
+        "primary_metric": "test_ood.balanced_accuracy",
+        "primary_score": 0.9736118804173715,
+        "threshold": 0.5
+      },
+      "step": 2,
+      "submission": "submissions/submission_d1667fd8908541bb8dc7bf55ff8eacf7.csv",
+      "submission_sha256": "5a4fdefd6a32aeeed1e7b146a4b4ca2146ce78ff15f4a85f7a6931b17405a61d",
+      "validation_score": 0.9588888888888889
+    },
+    {
+      "agent_marked_buggy": false,
+      "node_id": "25b1732adadb4a8391206bbf17e29c89",
+      "pipeline": "0003_25b1732adadb4a8391206bbf17e29c89",
+      "scores": {
+        "by_center": {
+          "CWZ": {
+            "accuracy": 0.9818731117824774,
+            "auroc": 0.9993792505363093,
+            "balanced_accuracy": 0.9820165228901365,
+            "n_samples": 662
+          },
+          "LPON": {
+            "accuracy": 0.9880597014925373,
+            "auroc": 0.9998217865894409,
+            "balanced_accuracy": 0.9880597014925373,
+            "n_samples": 670
+          },
+          "RST": {
+            "accuracy": 0.9686567164179104,
+            "auroc": 0.9942169748273557,
+            "balanced_accuracy": 0.9686567164179105,
+            "n_samples": 670
+          },
+          "RUMC": {
+            "accuracy": 0.9788888888888889,
+            "auroc": 0.997185185185185,
+            "balanced_accuracy": 0.9788888888888889,
+            "n_samples": 1800
+          },
+          "UMCU": {
+            "accuracy": 0.995,
+            "auroc": 0.9998333333333334,
+            "balanced_accuracy": 0.995,
+            "n_samples": 1800
+          }
+        },
+        "by_split": {
+          "test_id": {
+            "accuracy": 0.9869444444444444,
+            "auroc": 0.998683487654321,
+            "balanced_accuracy": 0.9869444444444444,
+            "n_samples": 3600
+          },
+          "test_ood": {
+            "accuracy": 0.9795204795204795,
+            "auroc": 0.9979939819458375,
+            "balanced_accuracy": 0.9795580772167248,
+            "n_samples": 2002
+          }
+        },
+        "id_minus_ood_balanced_accuracy": 0.00738636722771957,
+        "primary_metric": "test_ood.balanced_accuracy",
+        "primary_score": 0.9795580772167248,
+        "threshold": 0.5
+      },
+      "step": 3,
+      "submission": "submissions/submission_25b1732adadb4a8391206bbf17e29c89.csv",
+      "submission_sha256": "913a50fee0e5a4520e61961f6e9b9256d520a73a310d068bcc49294d07900a29",
+      "validation_score": 0.9591666666666667
+    },
+    {
+      "agent_marked_buggy": false,
+      "node_id": "e0fd5e855d674dd5b23b74c8e4f0e791",
+      "pipeline": "0004_e0fd5e855d674dd5b23b74c8e4f0e791",
+      "scores": {
+        "by_center": {
+          "CWZ": {
+            "accuracy": 0.9758308157099698,
+            "auroc": 0.9986306997124469,
+            "balanced_accuracy": 0.9759368296134009,
+            "n_samples": 662
+          },
+          "LPON": {
+            "accuracy": 1.0,
+            "auroc": 1.0,
+            "balanced_accuracy": 1.0,
+            "n_samples": 670
+          },
+          "RST": {
+            "accuracy": 0.9731343283582089,
+            "auroc": 0.9979594564490978,
+            "balanced_accuracy": 0.973134328358209,
+            "n_samples": 670
+          },
+          "RUMC": {
+            "accuracy": 0.9827777777777778,
+            "auroc": 0.9990197530864198,
+            "balanced_accuracy": 0.9827777777777778,
+            "n_samples": 1800
+          },
+          "UMCU": {
+            "accuracy": 0.9927777777777778,
+            "auroc": 0.9998987654320988,
+            "balanced_accuracy": 0.9927777777777778,
+            "n_samples": 1800
+          }
+        },
+        "by_split": {
+          "test_id": {
+            "accuracy": 0.9877777777777778,
+            "auroc": 0.999562037037037,
+            "balanced_accuracy": 0.9877777777777778,
+            "n_samples": 3600
+          },
+          "test_ood": {
+            "accuracy": 0.983016983016983,
+            "auroc": 0.999202582872997,
+            "balanced_accuracy": 0.9830406642814014,
+            "n_samples": 2002
+          }
+        },
+        "id_minus_ood_balanced_accuracy": 0.0047371134963763994,
+        "primary_metric": "test_ood.balanced_accuracy",
+        "primary_score": 0.9830406642814014,
+        "threshold": 0.5
+      },
+      "step": 4,
+      "submission": "submissions/submission_e0fd5e855d674dd5b23b74c8e4f0e791.csv",
+      "submission_sha256": "62974275c229b273eadecc08f4385d759dc990785da37e9440d7cbd38b48fd97",
+      "validation_score": 0.9638888888888889
+    },
+    {
+      "agent_marked_buggy": false,
+      "node_id": "139c6bf230224216affcaa3e7dd9cbb7",
+      "pipeline": "0005_139c6bf230224216affcaa3e7dd9cbb7",
+      "scores": {
+        "by_center": {
+          "CWZ": {
+            "accuracy": 0.9712990936555891,
+            "auroc": 0.999415765210644,
+            "balanced_accuracy": 0.9716052763704414,
+            "n_samples": 662
+          },
+          "LPON": {
+            "accuracy": 0.991044776119403,
+            "auroc": 0.9999732679884161,
+            "balanced_accuracy": 0.991044776119403,
+            "n_samples": 670
+          },
+          "RST": {
+            "accuracy": 0.9567164179104478,
+            "auroc": 0.997313432835821,
+            "balanced_accuracy": 0.9567164179104477,
+            "n_samples": 670
+          },
+          "RUMC": {
+            "accuracy": 0.9833333333333333,
+            "auroc": 0.9992024691358024,
+            "balanced_accuracy": 0.9833333333333334,
+            "n_samples": 1800
+          },
+          "UMCU": {
+            "accuracy": 0.9944444444444445,
+            "auroc": 0.9999012345679014,
+            "balanced_accuracy": 0.9944444444444445,
+            "n_samples": 1800
+          }
+        },
+        "by_split": {
+          "test_id": {
+            "accuracy": 0.9888888888888889,
+            "auroc": 0.9996308641975308,
+            "balanced_accuracy": 0.9888888888888889,
+            "n_samples": 3600
+          },
+          "test_ood": {
+            "accuracy": 0.973026973026973,
+            "auroc": 0.9991342185761264,
+            "balanced_accuracy": 0.9731103759038309,
+            "n_samples": 2002
+          }
+        },
+        "id_minus_ood_balanced_accuracy": 0.015778512985058057,
+        "primary_metric": "test_ood.balanced_accuracy",
+        "primary_score": 0.9731103759038309,
+        "threshold": 0.5
+      },
+      "step": 5,
+      "submission": "submissions/submission_139c6bf230224216affcaa3e7dd9cbb7.csv",
+      "submission_sha256": "fc52c1deeffbea5065b25ce68ab3849b4319c77707d3513f1431f20d2637f680",
+      "validation_score": 0.9716666666666667
+    },
+    {
+      "agent_marked_buggy": false,
+      "node_id": "c4bbbb457f3841d8af1333adf7a15084",
+      "pipeline": "0006_c4bbbb457f3841d8af1333adf7a15084",
+      "scores": {
+        "by_center": {
+          "CWZ": {
+            "accuracy": 0.9758308157099698,
+            "auroc": 0.999443151216395,
+            "balanced_accuracy": 0.9761194029850746,
+            "n_samples": 662
+          },
+          "LPON": {
+            "accuracy": 0.9895522388059701,
+            "auroc": 0.9999287146357763,
+            "balanced_accuracy": 0.9895522388059701,
+            "n_samples": 670
+          },
+          "RST": {
+            "accuracy": 0.9567164179104478,
+            "auroc": 0.9950991312096236,
+            "balanced_accuracy": 0.9567164179104477,
+            "n_samples": 670
+          },
+          "RUMC": {
+            "accuracy": 0.985,
+            "auroc": 0.9986271604938272,
+            "balanced_accuracy": 0.985,
+            "n_samples": 1800
+          },
+          "UMCU": {
+            "accuracy": 0.995,
+            "auroc": 0.9999148148148147,
+            "balanced_accuracy": 0.995,
+            "n_samples": 1800
+          }
+        },
+        "by_split": {
+          "test_id": {
+            "accuracy": 0.99,
+            "auroc": 0.9993853395061728,
+            "balanced_accuracy": 0.99,
+            "n_samples": 3600
+          },
+          "test_ood": {
+            "accuracy": 0.974025974025974,
+            "auroc": 0.9984181399921156,
+            "balanced_accuracy": 0.9741014087037231,
+            "n_samples": 2002
+          }
+        },
+        "id_minus_ood_balanced_accuracy": 0.01589859129627691,
+        "primary_metric": "test_ood.balanced_accuracy",
+        "primary_score": 0.9741014087037231,
+        "threshold": 0.5
+      },
+      "step": 6,
+      "submission": "submissions/submission_c4bbbb457f3841d8af1333adf7a15084.csv",
+      "submission_sha256": "de26b4e03b5879d6cee18172d6152eaf79b8cf6c611dc637bd35c7d1d8a796ad",
+      "validation_score": 0.9691666666666667
+    },
+    {
+      "agent_marked_buggy": false,
+      "node_id": "545f4fcd2bf34cdbaf5c38587e3914a1",
+      "pipeline": "0007_545f4fcd2bf34cdbaf5c38587e3914a1",
+      "scores": {
+        "by_center": {
+          "CWZ": {
+            "accuracy": 0.9622356495468278,
+            "auroc": 0.998630699712447,
+            "balanced_accuracy": 0.9626865671641791,
+            "n_samples": 662
+          },
+          "LPON": {
+            "accuracy": 0.9955223880597015,
+            "auroc": 1.0,
+            "balanced_accuracy": 0.9955223880597015,
+            "n_samples": 670
+          },
+          "RST": {
+            "accuracy": 0.9402985074626866,
+            "auroc": 0.996034751615059,
+            "balanced_accuracy": 0.9402985074626866,
+            "n_samples": 670
+          },
+          "RUMC": {
+            "accuracy": 0.9788888888888889,
+            "auroc": 0.9993370370370371,
+            "balanced_accuracy": 0.9788888888888889,
+            "n_samples": 1800
+          },
+          "UMCU": {
+            "accuracy": 0.9905555555555555,
+            "auroc": 0.9996790123456789,
+            "balanced_accuracy": 0.9905555555555556,
+            "n_samples": 1800
+          }
+        },
+        "by_split": {
+          "test_id": {
+            "accuracy": 0.9847222222222223,
+            "auroc": 0.999508024691358,
+            "balanced_accuracy": 0.9847222222222223,
+            "n_samples": 3600
+          },
+          "test_ood": {
+            "accuracy": 0.9660339660339661,
+            "auroc": 0.9985369042450735,
+            "balanced_accuracy": 0.9661611700773964,
+            "n_samples": 2002
+          }
+        },
+        "id_minus_ood_balanced_accuracy": 0.01856105214482584,
+        "primary_metric": "test_ood.balanced_accuracy",
+        "primary_score": 0.9661611700773964,
+        "threshold": 0.5
+      },
+      "step": 7,
+      "submission": "submissions/submission_545f4fcd2bf34cdbaf5c38587e3914a1.csv",
+      "submission_sha256": "d05132230ec29a72f6e7ee29c7bc58eca5590d8da5e3f5422ef847eae9624678",
+      "validation_score": 0.9663888888888889
+    },
+    {
+      "agent_marked_buggy": false,
+      "node_id": "94ed0404177e4bcb8046dfb58438e811",
+      "pipeline": "0008_94ed0404177e4bcb8046dfb58438e811",
+      "scores": {
+        "by_center": {
+          "CWZ": {
+            "accuracy": 0.9682779456193353,
+            "auroc": 0.9995709525765667,
+            "balanced_accuracy": 0.9686567164179105,
+            "n_samples": 662
+          },
+          "LPON": {
+            "accuracy": 0.9850746268656716,
+            "auroc": 0.9999732679884161,
+            "balanced_accuracy": 0.9850746268656716,
+            "n_samples": 670
+          },
+          "RST": {
+            "accuracy": 0.9462686567164179,
+            "auroc": 0.9945110269547783,
+            "balanced_accuracy": 0.9462686567164179,
+            "n_samples": 670
+          },
+          "RUMC": {
+            "accuracy": 0.9805555555555555,
+            "auroc": 0.9974703703703703,
+            "balanced_accuracy": 0.9805555555555556,
+            "n_samples": 1800
+          },
+          "UMCU": {
+            "accuracy": 0.9905555555555555,
+            "auroc": 0.9998641975308642,
+            "balanced_accuracy": 0.9905555555555556,
+            "n_samples": 1800
+          }
+        },
+        "by_split": {
+          "test_id": {
+            "accuracy": 0.9855555555555555,
+            "auroc": 0.9988086419753087,
+            "balanced_accuracy": 0.9855555555555555,
+            "n_samples": 3600
+          },
+          "test_ood": {
+            "accuracy": 0.9665334665334665,
+            "auroc": 0.9979281126962978,
+            "balanced_accuracy": 0.9666467062880183,
+            "n_samples": 2002
+          }
+        },
+        "id_minus_ood_balanced_accuracy": 0.01890884926753722,
+        "primary_metric": "test_ood.balanced_accuracy",
+        "primary_score": 0.9666467062880183,
+        "threshold": 0.5
+      },
+      "step": 8,
+      "submission": "submissions/submission_94ed0404177e4bcb8046dfb58438e811.csv",
+      "submission_sha256": "426d88403a673dcb4d6a7c16c810a216cb6a045ef9d7af5a48387f0983e644ea",
+      "validation_score": 0.9669444444444445
+    },
+    {
+      "agent_marked_buggy": false,
+      "node_id": "8eaa92a9636e4cf584e47561f838212b",
+      "pipeline": "0009_8eaa92a9636e4cf584e47561f838212b",
+      "scores": {
+        "by_center": {
+          "CWZ": {
+            "accuracy": 0.9561933534743202,
+            "auroc": 0.9979186635629194,
+            "balanced_accuracy": 0.9566799032361131,
+            "n_samples": 662
+          },
+          "LPON": {
+            "accuracy": 0.9895522388059701,
+            "auroc": 1.0,
+            "balanced_accuracy": 0.9895522388059701,
+            "n_samples": 670
+          },
+          "RST": {
+            "accuracy": 0.9447761194029851,
+            "auroc": 0.9951347738917353,
+            "balanced_accuracy": 0.9447761194029851,
+            "n_samples": 670
+          },
+          "RUMC": {
+            "accuracy": 0.9783333333333334,
+            "auroc": 0.9989444444444444,
+            "balanced_accuracy": 0.9783333333333333,
+            "n_samples": 1800
+          },
+          "UMCU": {
+            "accuracy": 0.9888888888888889,
+            "auroc": 0.9997308641975309,
+            "balanced_accuracy": 0.9888888888888889,
+            "n_samples": 1800
+          }
+        },
+        "by_split": {
+          "test_id": {
+            "accuracy": 0.9836111111111111,
+            "auroc": 0.9993925925925925,
+            "balanced_accuracy": 0.9836111111111111,
+            "n_samples": 3600
+          },
+          "test_ood": {
+            "accuracy": 0.9635364635364635,
+            "auroc": 0.9982734272469148,
+            "balanced_accuracy": 0.9636696158126119,
+            "n_samples": 2002
+          }
+        },
+        "id_minus_ood_balanced_accuracy": 0.0199414952984992,
+        "primary_metric": "test_ood.balanced_accuracy",
+        "primary_score": 0.9636696158126119,
+        "threshold": 0.5
+      },
+      "step": 9,
+      "submission": "submissions/submission_8eaa92a9636e4cf584e47561f838212b.csv",
+      "submission_sha256": "9ee863e433a804a6cf980604f8384bf1d6ebd5ed85d946accda64a48d783f251",
+      "validation_score": 0.9672222222222222
+    },
+    {
+      "agent_marked_buggy": false,
+      "node_id": "7f63cbad732044839bbeb9d1a34fe5dc",
+      "pipeline": "0010_7f63cbad732044839bbeb9d1a34fe5dc",
+      "scores": {
+        "by_center": {
+          "CWZ": {
+            "accuracy": 0.9546827794561934,
+            "auroc": 0.9978730202200008,
+            "balanced_accuracy": 0.9551143365740107,
+            "n_samples": 662
+          },
+          "LPON": {
+            "accuracy": 0.9940298507462687,
+            "auroc": 0.9999732679884162,
+            "balanced_accuracy": 0.9940298507462686,
+            "n_samples": 670
+          },
+          "RST": {
+            "accuracy": 0.9373134328358209,
+            "auroc": 0.9959812875918913,
+            "balanced_accuracy": 0.9373134328358209,
+            "n_samples": 670
+          },
+          "RUMC": {
+            "accuracy": 0.9805555555555555,
+            "auroc": 0.9986697530864196,
+            "balanced_accuracy": 0.9805555555555556,
+            "n_samples": 1800
+          },
+          "UMCU": {
+            "accuracy": 0.9844444444444445,
+            "auroc": 0.9989469135802469,
+            "balanced_accuracy": 0.9844444444444445,
+            "n_samples": 1800
+          }
+        },
+        "by_split": {
+          "test_id": {
+            "accuracy": 0.9825,
+            "auroc": 0.9987916666666667,
+            "balanced_accuracy": 0.9825,
+            "n_samples": 3600
+          },
+          "test_ood": {
+            "accuracy": 0.962037962037962,
+            "auroc": 0.9971242084462342,
+            "balanced_accuracy": 0.9621690943477198,
+            "n_samples": 2002
+          }
+        },
+        "id_minus_ood_balanced_accuracy": 0.02033090565228024,
+        "primary_metric": "test_ood.balanced_accuracy",
+        "primary_score": 0.9621690943477198,
+        "threshold": 0.5
+      },
+      "step": 10,
+      "submission": "submissions/submission_7f63cbad732044839bbeb9d1a34fe5dc.csv",
+      "submission_sha256": "d6616258acf0d0d6125bfbe10944084e9bd835176f7d0add886c6053769827cb",
+      "validation_score": 0.9413888888888888
+    },
+    {
+      "agent_marked_buggy": false,
+      "node_id": "d2532972ebfb4e3594e1f17a09f2aaa0",
+      "pipeline": "0012_d2532972ebfb4e3594e1f17a09f2aaa0",
+      "scores": {
+        "by_center": {
+          "CWZ": {
+            "accuracy": 0.974320241691843,
+            "auroc": 0.9988589164270392,
+            "balanced_accuracy": 0.9745538363229722,
+            "n_samples": 662
+          },
+          "LPON": {
+            "accuracy": 0.9955223880597015,
+            "auroc": 1.0,
+            "balanced_accuracy": 0.9955223880597015,
+            "n_samples": 670
+          },
+          "RST": {
+            "accuracy": 0.9597014925373134,
+            "auroc": 0.9988327021608375,
+            "balanced_accuracy": 0.9597014925373135,
+            "n_samples": 670
+          },
+          "RUMC": {
+            "accuracy": 0.9772222222222222,
+            "auroc": 0.9992,
+            "balanced_accuracy": 0.9772222222222222,
+            "n_samples": 1800
+          },
+          "UMCU": {
+            "accuracy": 0.9844444444444445,
+            "auroc": 0.9994666666666666,
+            "balanced_accuracy": 0.9844444444444445,
+            "n_samples": 1800
+          }
+        },
+        "by_split": {
+          "test_id": {
+            "accuracy": 0.9808333333333333,
+            "auroc": 0.9992688271604938,
+            "balanced_accuracy": 0.9808333333333333,
+            "n_samples": 3600
+          },
+          "test_ood": {
+            "accuracy": 0.9765234765234765,
+            "auroc": 0.9994291331706563,
+            "balanced_accuracy": 0.9766009471199668,
+            "n_samples": 2002
+          }
+        },
+        "id_minus_ood_balanced_accuracy": 0.0042323862133665235,
+        "primary_metric": "test_ood.balanced_accuracy",
+        "primary_score": 0.9766009471199668,
+        "threshold": 0.5
+      },
+      "step": 12,
+      "submission": "submissions/submission_d2532972ebfb4e3594e1f17a09f2aaa0.csv",
+      "submission_sha256": "ddebb7ee75ce463944605458e228e3fb6ea16d59f0f859ad94b2918fb5283534",
+      "validation_score": 0.9541666666666666
+    },
+    {
+      "agent_marked_buggy": false,
+      "node_id": "9f5ab3d0f6344dff9d85ab7576cb4ec9",
+      "pipeline": "0014_9f5ab3d0f6344dff9d85ab7576cb4ec9",
+      "scores": {
+        "by_center": {
+          "CWZ": {
+            "accuracy": 0.9531722054380665,
+            "auroc": 0.9985850563695285,
+            "balanced_accuracy": 0.9537313432835821,
+            "n_samples": 662
+          },
+          "LPON": {
+            "accuracy": 0.9970149253731343,
+            "auroc": 0.999991089329472,
+            "balanced_accuracy": 0.9970149253731344,
+            "n_samples": 670
+          },
+          "RST": {
+            "accuracy": 0.9328358208955224,
+            "auroc": 0.9947427043885053,
+            "balanced_accuracy": 0.9328358208955224,
+            "n_samples": 670
+          },
+          "RUMC": {
+            "accuracy": 0.9761111111111112,
+            "auroc": 0.9989086419753086,
+            "balanced_accuracy": 0.9761111111111112,
+            "n_samples": 1800
+          },
+          "UMCU": {
+            "accuracy": 0.9844444444444445,
+            "auroc": 0.9994679012345679,
+            "balanced_accuracy": 0.9844444444444445,
+            "n_samples": 1800
+          }
+        },
+        "by_split": {
+          "test_id": {
+            "accuracy": 0.9802777777777778,
+            "auroc": 0.999207098765432,
+            "balanced_accuracy": 0.9802777777777778,
+            "n_samples": 3600
+          },
+          "test_ood": {
+            "accuracy": 0.961038961038961,
+            "auroc": 0.9983053638527523,
+            "balanced_accuracy": 0.9611860456992869,
+            "n_samples": 2002
+          }
+        },
+        "id_minus_ood_balanced_accuracy": 0.01909173207849091,
+        "primary_metric": "test_ood.balanced_accuracy",
+        "primary_score": 0.9611860456992869,
+        "threshold": 0.5
+      },
+      "step": 14,
+      "submission": "submissions/submission_9f5ab3d0f6344dff9d85ab7576cb4ec9.csv",
+      "submission_sha256": "d3f658ae9d2397df05d131c368a86756113b5eb8a146bd26a585369e6fe0e2b8",
+      "validation_score": 0.966388888888889
+    },
+    {
+      "agent_marked_buggy": false,
+      "node_id": "3bcf7c0910ea44e29d882546e30a6371",
+      "pipeline": "0015_3bcf7c0910ea44e29d882546e30a6371",
+      "scores": {
+        "by_center": {
+          "CWZ": {
+            "accuracy": 0.9561933534743202,
+            "auroc": 0.998630699712447,
+            "balanced_accuracy": 0.9566799032361131,
+            "n_samples": 662
+          },
+          "LPON": {
+            "accuracy": 0.991044776119403,
+            "auroc": 0.9999108932947205,
+            "balanced_accuracy": 0.991044776119403,
+            "n_samples": 670
+          },
+          "RST": {
+            "accuracy": 0.8970149253731343,
+            "auroc": 0.9907774560035643,
+            "balanced_accuracy": 0.8970149253731343,
+            "n_samples": 670
+          },
+          "RUMC": {
+            "accuracy": 0.9716666666666667,
+            "auroc": 0.9966382716049382,
+            "balanced_accuracy": 0.9716666666666667,
+            "n_samples": 1800
+          },
+          "UMCU": {
+            "accuracy": 0.9827777777777778,
+            "auroc": 0.9987413580246913,
+            "balanced_accuracy": 0.9827777777777778,
+            "n_samples": 1800
+          }
+        },
+        "by_split": {
+          "test_id": {
+            "accuracy": 0.9772222222222222,
+            "auroc": 0.9976836419753086,
+            "balanced_accuracy": 0.9772222222222222,
+            "n_samples": 3600
+          },
+          "test_ood": {
+            "accuracy": 0.948051948051948,
+            "auroc": 0.9953691921535751,
+            "balanced_accuracy": 0.9482507223162023,
+            "n_samples": 2002
+          }
+        },
+        "id_minus_ood_balanced_accuracy": 0.028971499906019882,
+        "primary_metric": "test_ood.balanced_accuracy",
+        "primary_score": 0.9482507223162023,
+        "threshold": 0.5
+      },
+      "step": 15,
+      "submission": "submissions/submission_3bcf7c0910ea44e29d882546e30a6371.csv",
+      "submission_sha256": "133921f4f169377910b49a77439c2eab1cd0e2618b3ce38713b792b406c83b57",
+      "validation_score": 0.9466666666666667
+    },
+    {
+      "agent_marked_buggy": false,
+      "node_id": "3435fd6bc9d0484b92b9909151f50850",
+      "pipeline": "0016_3435fd6bc9d0484b92b9909151f50850",
+      "scores": {
+        "by_center": {
+          "CWZ": {
+            "accuracy": 0.9682779456193353,
+            "auroc": 0.9980373362545073,
+            "balanced_accuracy": 0.9685471723949062,
+            "n_samples": 662
+          },
+          "LPON": {
+            "accuracy": 0.9955223880597015,
+            "auroc": 1.0,
+            "balanced_accuracy": 0.9955223880597015,
+            "n_samples": 670
+          },
+          "RST": {
+            "accuracy": 0.9567164179104478,
+            "auroc": 0.9976743149922032,
+            "balanced_accuracy": 0.9567164179104477,
+            "n_samples": 670
+          },
+          "RUMC": {
+            "accuracy": 0.9844444444444445,
+            "auroc": 0.9994370370370371,
+            "balanced_accuracy": 0.9844444444444445,
+            "n_samples": 1800
+          },
+          "UMCU": {
+            "accuracy": 0.9894444444444445,
+            "auroc": 0.999653086419753,
+            "balanced_accuracy": 0.9894444444444443,
+            "n_samples": 1800
+          }
+        },
+        "by_split": {
+          "test_id": {
+            "accuracy": 0.9869444444444444,
+            "auroc": 0.9995419753086421,
+            "balanced_accuracy": 0.9869444444444444,
+            "n_samples": 3600
+          },
+          "test_ood": {
+            "accuracy": 0.9735264735264735,
+            "auroc": 0.9987305199179628,
+            "balanced_accuracy": 0.9736158724931012,
+            "n_samples": 2002
+          }
+        },
+        "id_minus_ood_balanced_accuracy": 0.013328571951343182,
+        "primary_metric": "test_ood.balanced_accuracy",
+        "primary_score": 0.9736158724931012,
+        "threshold": 0.5
+      },
+      "step": 16,
+      "submission": "submissions/submission_3435fd6bc9d0484b92b9909151f50850.csv",
+      "submission_sha256": "9c6682e14e3279459ac90211cab7c0f60de00f0538849079df469458029a10c0",
+      "validation_score": 0.9644444444444444
+    }
+  ],
+  "unscored_nodes": [
+    {
+      "node_id": "482ab293f2f94a99ad0179a18a65bcb4",
+      "pipeline": "0011_482ab293f2f94a99ad0179a18a65bcb4_buggy",
+      "reason": "TimeoutError"
+    },
+    {
+      "node_id": "cf17322a8e7a4107aaa14e541e0e9f53",
+      "pipeline": "0013_cf17322a8e7a4107aaa14e541e0e9f53_buggy",
+      "reason": "TimeoutError"
+    }
+  ]
+}

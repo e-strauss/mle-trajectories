@@ -1,0 +1,24 @@
+scored_at = 2026-11-24
+note = "Offline post-run evaluation: primary balanced accuracy on 2,002 unseen-center test patches at threshold 0.5. Final pipeline selected by validation before reading hidden labels. Per-step test scores are retrospective and were not used for selection; known-center scores and AUROC are in evaluation.json."
+
+[final]
+score = 0.9731103759038309
+pipeline = "0005_139c6bf230224216affcaa3e7dd9cbb7"
+file = "submissions/submission_139c6bf230224216affcaa3e7dd9cbb7.csv"
+note = "Original saved submission of the best valid validation node; no rerun or test-based reselection."
+
+[steps]
+"0001_6f95f1f9957f48f08c2913b5ad8dddc5" = 0.9860417072111858
+"0002_d1667fd8908541bb8dc7bf55ff8eacf7" = 0.9736118804173715
+"0003_25b1732adadb4a8391206bbf17e29c89" = 0.9795580772167248
+"0004_e0fd5e855d674dd5b23b74c8e4f0e791" = 0.9830406642814014
+"0005_139c6bf230224216affcaa3e7dd9cbb7" = 0.9731103759038309
+"0006_c4bbbb457f3841d8af1333adf7a15084" = 0.9741014087037231
+"0007_545f4fcd2bf34cdbaf5c38587e3914a1" = 0.9661611700773964
+"0008_94ed0404177e4bcb8046dfb58438e811" = 0.9666467062880183
+"0009_8eaa92a9636e4cf584e47561f838212b" = 0.9636696158126119
+"0010_7f63cbad732044839bbeb9d1a34fe5dc" = 0.9621690943477198
+"0012_d2532972ebfb4e3594e1f17a09f2aaa0" = 0.9766009471199668
+"0014_9f5ab3d0f6344dff9d85ab7576cb4ec9" = 0.9611860456992869
+"0015_3bcf7c0910ea44e29d882546e30a6371" = 0.9482507223162023
+"0016_3435fd6bc9d0484b92b9909151f50850" = 0.9736158724931012
