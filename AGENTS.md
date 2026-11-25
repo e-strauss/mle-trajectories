@@ -29,9 +29,10 @@ to see what the agent actually changed.
 ```
 <dataset>/
     input/                 full data (gitignored); pipelines read ./input/...
-    sample/input/          small self-consistent sample (gitignored)
+    sample_<size>/input/   self-consistent samples, same file names (gitignored)
+    sample_<size>/sample_manifest.json   how each was built (tracked)
     get_data.sh | DATA.md  how to obtain the data
-    make_sample.py         builds sample/input/
+    make_sample.py         per-dataset sampler, where the [sample] recipe needs one
     <agent>_run_<N>/       one agent run (naming varies: mle-star-run-1, mle_star_run_1, mle-Codex-run1, ...)
         pipelines/         the agent's original scripts — never modify
         final_state.json   run metadata / state dump (or journal_slim.json, workspace.json, ...; format depends on the agent)
@@ -40,6 +41,8 @@ tools/
     skrub_dataops_summary.md   the DataOps guide (read in full, see above)
     skrubify/                  LLM-driven script -> DataOps converter + validator
     pipeline_analyzer/         lineage, operator DAGs, per-step diffs -> HTML report; runtime measurement
+    dataset_sample/            builds sample_<size>/ from the [sample] recipe in dataset.toml
+    code_stats/                static features of a script (size, components, hyperparameters, data handling)
     trajectory.py              tabular overview of one run's final_state.json
     getcomp.sh                 one-off Kaggle download
 website/                       corpus explorer: Python registry/API + Next.js frontend (see website/README.md)
@@ -71,9 +74,13 @@ When you do use a tool, read its README first (`tools/skrubify/README.md`,
 - Agents that write DataOps plans themselves (mle-Codex runs) have no `skrubify*/`
   folder; their shared modules (`common.py`, `features.py`, ...) and
   `data_exploration_*.py` are not pipelines.
-- `--run-in <dataset>` runs against full data, `--run-in <dataset>/sample`
-  against the sample. Full data is slow; use the `dataset-sample` skill to build
-  a sample before iterating with skrubify's repair loop or the runtime tool.
+- `--run-in <dataset>` runs against full data, `--run-in <dataset>/sample_<size>`
+  against a sample. Full data is slow; build a sample first
+  (`python -m dataset_sample <dataset> --size 100k`, or "Build sample" on the
+  website) before iterating with skrubify's repair loop or the runtime tool. A
+  dataset without a `[sample]` recipe needs one: the `dataset-sample` skill says
+  how to choose it. Never cap rows at read time instead: there is no row cap
+  any more, and a sample must keep joins and classes intact.
 - `stratum` is a drop-in for skrub (`import stratum as skrub`) with a much faster
   evaluator; large fine-grained plans are only practically runnable under it.
 - Environment: `uv` project (`pyproject.toml`, Python >= 3.14).

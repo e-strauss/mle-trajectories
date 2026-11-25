@@ -3,7 +3,7 @@
 Usage:
     python data_exploration_4.py [block ...]        # default: every block in BLOCKS
 
-Three checks the CV cannot do for you (guide section 15, CLAUDE.md leakage part 3):
+Three checks the CV cannot do for you (guide section 15):
 
   (a) STANDALONE SCORE. Rank the 355 candidates using this block's columns alone
       (no model: each numeric column is used directly as a ranking score) and

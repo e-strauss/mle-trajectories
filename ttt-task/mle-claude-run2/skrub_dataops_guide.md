@@ -796,8 +796,8 @@ estimator (`.skb.apply(model, y=y)`), once wrapped with
 `fit`/`predict`/`predict_proba` API. See also skrub's own worked example:
 <https://skrub-data.org/stable/auto_examples/02_data_ops/1160_pytorch.html>.
 
-**Not part of the default shared venv** (skrub_dataops guide + CLAUDE.md's
-package list) — install on a machine with no GPU using the CPU-only wheel
+**Not part of the default shared venv** — install on a machine with no GPU
+using the CPU-only wheel
 (the default PyPI `torch` wheel pulls in CUDA dependencies you don't need):
 ```bash
 uv pip install -p <venv>/bin/python torch --index-url https://download.pytorch.org/whl/cpu

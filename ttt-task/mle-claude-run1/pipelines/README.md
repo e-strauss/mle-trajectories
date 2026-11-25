@@ -81,10 +81,9 @@ results.json
 This is forced by scale. A skrub plan re-runs every recorded step for each CV
 fold and each grid variant; pipeline_09 alone was 27 fits. Re-deriving
 neighbourhood histograms from a 623M-edge link graph 27 times is not an option,
-and the CLAUDE.md guidance for datasets too large to CV directly says to build
-one deterministic working sample and give every pipeline a shared recorded read
-of it. Comparability then depends on those files never changing, which is why
-they are written once and treated as frozen.
+so we build one deterministic working sample and give every pipeline a shared
+recorded read of it. Comparability then depends on those files never changing,
+which is why they are written once and treated as frozen.
 
 **The cost is real and worth stating plainly: the cross-validation does not
 cover feature construction.** Each fold re-runs the l1 normalisation, the

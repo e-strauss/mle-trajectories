@@ -1,7 +1,7 @@
 """Round 4: BUILD THE FROZEN FEATURE STORE (run once; never re-run).
 
 The raw data is far too big to cross-validate directly (18.7M tracked domains,
-623M link edges), so per CLAUDE.md we build ONE deterministic working sample and
+623M link edges), so we build ONE deterministic working sample and
 give every pipeline a shared recorded read of it. Comparability across the whole
 workspace depends on these files never changing.
 
